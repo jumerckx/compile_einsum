@@ -1,0 +1,9 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Cthulhu = "f68482b8-f384-11e8-15f7-abe071a5a75f"
+Einsum = "b7d42ee7-0b51-5a75-98ca-779d3107e4c0"
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
+MLIR = "bfde9dd4-8f40-4a1e-be09-1475335e1c92"
+MLIR_jll = "a70bccb4-a5c0-5e2e-a329-e731972457e8"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
