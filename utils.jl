@@ -25,14 +25,13 @@ end
 function lowerModuleToLLVM(mod::IR.MModule)
     pm = IR.PassManager()
 
-    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineForToGPU())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertFuncToLLVMPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionArithToLLVMConversionPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertIndexToLLVMPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionReconcileUnrealizedCasts())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertFuncToLLVMPass())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionArithToLLVMConversionPass())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertIndexToLLVMPass())
+    IR.add_owned_pass!(pm, API.mlirCreateConversionReconcileUnrealizedCasts())
     status = API.mlirPassManagerRunOnOp(pm, IR.get_operation(mod).operation)
 
     if status.value == 0

@@ -2,7 +2,7 @@ using MLIR, MLIR_jll
 includet("utils.jl")
 includet("Brutus.jl")
 
-using Einsum, BenchmarkTools, MLIR
+using Einsum, BenchmarkTools, MLIR, MacroTools
 
 using MLIR.Dialects.Affine
 using MLIR.IR
@@ -94,7 +94,9 @@ addr = jit(mod; opt=3)("_mlir_ciface_scaffolding")
 @ccall $addr(MemRef(A)::Ref{MemRef}, MemRef(B)::Ref{MemRef}, MemRef(C)::Ref{MemRef})::Int
 
 
-@btime @einsum A[i] = B[i, j] * C[j];
+prettify(@expand @einsum A[i] = B[i, j] * C[j])
+
+prettify(@expand @einsum A[i, j] = B[i, k] * C[k, j])
 
 f(a, b, c) = @einsum a[i] = b[i, j] * c[j];
 
@@ -146,4 +148,5 @@ addr = jit(mod; opt=3)("_mlir_ciface_scaffolding")
 @ccall $addr(MemRef(A)::Ref{MemRef}, MemRef(B)::Ref{MemRef}, MemRef(C)::Ref{MemRef})::Int
 
 @btime ccall(addr, Int, (Ref{MemRef}, Ref{MemRef}, Ref{MemRef}), $MemRef(A), $MemRef(B), $MemRef(C))
+
 
