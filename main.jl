@@ -81,7 +81,54 @@ function scaffolding(a::AbstractVector{T}, b::AbstractMatrix{T}, c::AbstractVect
   return 1
 end
 
-@time scaffolding(A, B, C)
+function parent()
+  a::Int = 0
+  f = ()->return a += 1
+end
+
+child = parent()
+
+@code_ircode child()
+
+#=
+i_max =
+j_max = 
+
+for_(1:i_max, )
+temp_init = 
+
+
+
+range
+reduced
+
+=#
+
+mutable struct Loops
+  ranges
+  bodies
+  args
+end
+
+
+
+Loops([1:10, 2:3], [])
+
+struct ForLoop{F}
+  f::F
+  start::Integer
+  stop::Integer
+end
+
+f = ForLoop(1, 10) do i
+  temp = eltype(a)(0)
+  ForLoop(1, 5) do j
+    temp += b[i, j] * c[j]
+  end
+  a[i] = temp
+end
+
+@code_ircode scaffolding(a, b, c)
 
 op = Brutus.@code_mlir scaffolding(A, B, C)
 mod = IR.MModule(IR.Location())

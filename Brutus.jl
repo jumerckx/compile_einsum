@@ -252,6 +252,27 @@ function code_mlir(f, types)
                 res = fop!(current_block, args, arg_types; loc)
 
                 values[sidx] = res
+            elseif Meta.isexpr(inst, :invoke)
+                val_type = stmt[:type]
+                if !(val_type <: BrutusType)
+                    error("type $val_type is not supported")
+                end
+                out_type = MLIRType(val_type)
+                
+                called_func = inst.args[begin+1]
+                if called_func isa GlobalRef
+                    called_func = getproperty(called_func.mod, called_func.name)
+                end
+
+                fop! = intrinsics_to_mlir[called_func]
+                args = get_value.(@view inst.args[begin+2:end])
+                arg_types = get_type.(Ref(ir), @view inst.args[begin+1:end])
+
+                loc = Location(string(line.file), line.line, 0)
+                res = IR.get_result(fop!(current_block, args, arg_types; loc))
+
+                values[sidx] = res
+
             elseif inst isa PhiNode
                 values[sidx] = IR.get_argument(current_block, n_phi_nodes += 1)
             elseif inst isa PiNode
