@@ -8,12 +8,21 @@ using MLIR: API
 using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm
 using Core: PhiNode, GotoNode, GotoIfNot, SSAValue, Argument, ReturnNode, PiNode
 
+new_intrinsic = ()->Base.compilerbarrier(:const, error("Intrinsics should be compiled to MLIR!"))
+
+@noinline begin_for(start::I, stop::I) where {I <: Integer} =  new_intrinsic()::Int
+@noinline begin_for(result::T, start::I, stop::I) where {I, T} = new_intrinsic()::Tuple{Int, T}
+
+@noinline yield_for(val::T=nothing) where T = new_intrinsic()::T
+
 IR.MLIRType(::Type{Nothing}) = IR.MLIRType(API.mlirLLVMVoidTypeGet(IR.context()))
 
 const BrutusScalarType = Union{Bool, Int64, UInt64, Int32, UInt32, Float32, Float64, UInt64, Array{Float64}, Array{Int64}}
 const BrutusType = Union{BrutusScalarType, Array{BrutusScalarType}}
 
 mutable struct CodegenContext
+    regions::Vector{Region}
+    loop_thunks::Vector
     const blocks::Vector{Block}
     const entryblock::Block
     currentblockindex::Int
@@ -23,6 +32,9 @@ mutable struct CodegenContext
     const args::Vector
 end
 currentblock(cg::CodegenContext) = cg.blocks[cg.currentblockindex]
+start_region!(cg::CodegenContext) = push!(cg.regions, Region())
+stop_region!(cg::CodegenContext) = pop!(cg.regions)
+currentregion(cg::CodegenContext) = cg.regions[end]
 
 function get_value(cg::CodegenContext, x)
     if x isa Core.SSAValue
@@ -130,7 +142,7 @@ intrinsics_to_mlir = Dict([
     Core.tuple => function(cg::CodegenContext, ic::InstructionContext)
         inputs_ = get_value.(Ref(cg), ic.args)
         outputs_ = MLIRType.(get_type.(Ref(cg), ic.args))
-
+        
         op = push!(currentblock(cg), Builtin.UnrealizedConversionCast(;
             location=ic.loc,
             outputs_,
@@ -204,7 +216,49 @@ intrinsics_to_mlir = Dict([
             indices_
         ))
         return mr
-    end
+    end,
+    Brutus.begin_for => function(cg::CodegenContext, ic::InstructionContext)
+        @assert length(cg.blocks) >= cg.currentblockindex + 1 "Not enough blocks in the CodegenContext."
+        next_block = cg.blocks[cg.currentblockindex + 1]
+                        
+        # the first input is always the loop index
+        value = IR.push_argument!(next_block, IR.IndexType(), ic.loc)
+
+        if (ic.result_type <: Tuple) # this signifies an additional loop variable
+            loopvartype = MLIRType(fieldtypes(ic.result_type)[2]) # for now, only one loop variable possible
+            value = (value, IR.push_argument!(next_block, loopvartype, ic.loc))
+        end
+
+        start_region!(cg)
+
+        initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
+        initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
+
+        # affine.for operation can only be created when the region is complete.
+        # Delaying the creation is OK since no other operations will be added to the current block after the for loop.
+        cur_region = currentregion(cg)
+        cur_block = currentblock(cg)
+        for_thunk = ()->push!(cur_block, Affine.For(;
+            location=ic.loc,
+            results_=MLIRType.(initial_values_types),
+            start_,
+            stop_,
+            initial_values_,
+            region_=cur_region
+        ))
+        push!(cg.loop_thunks, for_thunk)
+        cg.currentblockindex += 1 # a hack to make sure that getfields are added inside the loop body
+
+        return value
+    end,
+    Brutus.yield_for => function (cg::CodegenContext, ic::InstructionContext)
+        @assert length(cg.loop_thunks) > 0 "No loop to yield."
+        for_thunk = pop!(cg.loop_thunks)
+        for_op = for_thunk()
+        for_result = IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
+        stop_region!(cg)
+        return for_result
+    end,
 ])
 
 "Generates a block argument for each phi node present in the block."
@@ -271,6 +325,8 @@ function code_mlir(f, types)
     ]
 
     cg = CodegenContext(
+        [Region()],
+        [],
         blocks,
         blocks[begin],
         1,
@@ -279,8 +335,6 @@ function code_mlir(f, types)
         values,
         args
     )
-
-    region = Region()
 
     for (i, argtype) in enumerate(types.parameters)
         arg = IR.push_argument!(cg.entryblock, MLIRType(argtype), Location())
@@ -311,7 +365,8 @@ function code_mlir(f, types)
 
     for (block_id, bb) in enumerate(cg.ir.cfg.blocks)
         cg.currentblockindex = block_id
-        push!(region, currentblock(cg))
+        @info "number of regions: $(length(cg.regions))"
+        push!(currentregion(cg), currentblock(cg))
         n_phi_nodes = 0
 
         for sidx in bb.stmts
@@ -327,10 +382,6 @@ function code_mlir(f, types)
 
             if Meta.isexpr(inst, :call) || Meta.isexpr(inst, :invoke)
                 val_type = stmt[:type]
-                # if !(val_type <: BrutusType)
-                #     error("type $val_type is not supported")
-                # end
-                # out_type = MLIRType(val_type)
                 if Meta.isexpr(inst, :call)
                     called_func, args... = inst.args
                 else # Meta.isexpr(inst, :invoke)
@@ -384,7 +435,12 @@ function code_mlir(f, types)
                 retop = true ? func.return_ : std.return_
                 loc = Location(string(line.file), line.line, 0)
 
+                # TODO: what should be returned when unreachable? Currently just ignoring it.
+                # if isdefined(inst, :val)
+                #     push!(currentblock(cg), retop([get_value(cg, inst.val)]; loc))
+                # end
                 returnvalue = isdefined(inst, :val) ? indextoi64(cg, get_value(cg, inst.val)) : IR.get_result(push!(currentblock(cg), Llvm.Undef(; location=loc, res_=MLIRType(cg.ret))))
+                # returnvalue = isdefined(inst, :val) ? get_value(cg, inst.val) : IR.get_result(push!(currentblock(cg), arith.constant(0, MLIRType(cg.ret); loc)))
                 push!(currentblock(cg), retop([returnvalue]; loc))
 
             elseif Meta.isexpr(inst, :code_coverage_effect)
@@ -424,7 +480,7 @@ function code_mlir(f, types)
             NamedAttribute(LLVM15 ? "function_type" : "type", IR.Attribute(ftype)),
             NamedAttribute("llvm.emit_c_interface", IR.Attribute(API.mlirUnitAttrGet(IR.context())))
         ],
-        owned_regions = Region[region],
+        owned_regions = Region[currentregion(cg)],
         result_inference=false,
     )
 
