@@ -1,57 +1,15 @@
 module Brutus
 
-__revise_mode__ = :eval
+# __revise_mode__ = :eval
 
-import LLVM
+# import LLVM
 using MLIR.IR
 using MLIR: API
 using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm
 using Core: PhiNode, GotoNode, GotoIfNot, SSAValue, Argument, ReturnNode, PiNode
 
-struct MemRef{T,N} <: DenseArray{T, N}
-    allocated_pointer::Ptr{T}
-    aligned_pointer::Ptr{T}
-    offset::Int
-    sizes::NTuple{N, Int}
-    strides::NTuple{N, Int}
-    data::Array{T, N}
-end
-import Base.show
-Base.show(io::IO, A::Brutus.MemRef{T, N}) where {T, N} = print(io, "Brutus.MemRef{$T,$N} (size $(join(A.sizes, "×")))")
-Base.show(io::IO, ::MIME{Symbol("text/plain")}, X::Brutus.MemRef) = show(io, X)
-
-function MemRef(a::Array{T,N}) where {T,N}
-    @assert isbitstype(T) "Array element type should be isbits, got $T."
-    allocated_pointer = a.ref.mem.ptr
-    aligned_pointer = a.ref.ptr_or_offset
-    offset = Int((aligned_pointer - allocated_pointer)//sizeof(T))
-    @assert offset == 0 "Arrays with Memoryref offset are, as of yet, unsupported."
-    sizes = size(a)
-    strides = Tuple([1, cumprod(sizes)[1:end-1]...])
-
-    return MemRef{T,N}(
-        allocated_pointer,
-        aligned_pointer,
-        offset,
-        sizes,
-        strides,
-        a,
-    )
-end
-
-
-
-new_intrinsic = ()->Base.compilerbarrier(:const, error("Intrinsics should be compiled to MLIR!"))
-
-@noinline begin_for(start::I, stop::I) where {I <: Integer} =  new_intrinsic()::Int
-@noinline begin_for(result::T, start::I, stop::I) where {I, T} = new_intrinsic()::Tuple{Int, T}
-@noinline mlir_load(A::Brutus.MemRef{T}, I::Union{Integer, CartesianIndex}...) where T = Brutus.new_intrinsic()::T
-@noinline mlir_store!(A::Brutus.MemRef{T}, v, I::Union{Integer, CartesianIndex}...) where {T} = new_intrinsic()::T
-
-@noinline delinearize_index(i1::Integer, basis::NTuple{N, Int}) where {N} = Brutus.new_intrinsic()::NTuple{N, Int}
-delinearize_index(i1::Integer, A::Brutus.MemRef) = delinearize_index(i1, size(A))
-
-@noinline yield_for(val::T=nothing) where T = new_intrinsic()::T
+include("memref.jl")
+include("intrinsics.jl")
 
 IR.MLIRType(::Type{Nothing}) = IR.MLIRType(API.mlirLLVMVoidTypeGet(IR.context()))
 
@@ -107,7 +65,7 @@ function get_type(cg::CodegenContext, x)
     end
 end
 
-struct InstructionContext
+struct InstructionContext{I}
     args::Vector
     result_type::Type
     loc::Location
@@ -503,7 +461,8 @@ function code_mlir(f, types)
                 end
 
                 loc = Location(string(line.file), line.line, 0)
-                ic = InstructionContext(args, val_type, loc)
+                ic = InstructionContext{called_func}(args, val_type, loc)
+                @info emit(cg, ic)
 
                 fop! = intrinsics_to_mlir[called_func]
                 res = fop!(cg, ic)
