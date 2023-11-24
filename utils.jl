@@ -24,7 +24,8 @@ end
 
 function lowerModuleToLLVM(mod::IR.MModule)
     pm = IR.PassManager()
-
+    IR.add_pipeline!(MLIR.IR.OpPassManager(pm), "normalize-memrefs")
+    IR.add_pipeline!(MLIR.IR.OpPassManager(pm), "affine-expand-index-ops")
     IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
     IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
     IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
@@ -98,32 +99,4 @@ function jit(mod::IR.MModule; opt=0)
         return addr
     end
     return lookup
-end
-
-using StaticArrays
-
-struct MemRef{T,N}
-    allocated_pointer::Ptr{T}
-    aligned_pointer::Ptr{T}
-    offset::Int
-    sizes::SVector{N, Int}
-    strides::SVector{N, Int}
-    data::Array{T, N}
-end
-
-function MemRef(a::Array{T,N}) where {T,N}
-    @assert isbitstype(T) "non-isbitstype might not work"
-    allocated_pointer = aligned_pointer = Base.unsafe_convert(Ptr{T}, a)
-    offset = 0
-    sizes = SVector{N}(collect(size(a)))
-    strides = SVector{N}([1, cumprod(sizes)[1:end-1]...])
-
-    return MemRef{T,N}(
-        allocated_pointer,
-        aligned_pointer,
-        offset,
-        sizes,
-        strides,
-        a,
-    )
 end

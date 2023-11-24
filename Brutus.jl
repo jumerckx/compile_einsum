@@ -8,10 +8,48 @@ using MLIR: API
 using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm
 using Core: PhiNode, GotoNode, GotoIfNot, SSAValue, Argument, ReturnNode, PiNode
 
+struct MemRef{T,N} <: DenseArray{T, N}
+    allocated_pointer::Ptr{T}
+    aligned_pointer::Ptr{T}
+    offset::Int
+    sizes::NTuple{N, Int}
+    strides::NTuple{N, Int}
+    data::Array{T, N}
+end
+import Base.show
+Base.show(io::IO, A::Brutus.MemRef{T, N}) where {T, N} = print(io, "Brutus.MemRef{$T,$N} (size $(join(A.sizes, "×")))")
+Base.show(io::IO, ::MIME{Symbol("text/plain")}, X::Brutus.MemRef) = show(io, X)
+
+function MemRef(a::Array{T,N}) where {T,N}
+    @assert isbitstype(T) "Array element type should be isbits, got $T."
+    allocated_pointer = a.ref.mem.ptr
+    aligned_pointer = a.ref.ptr_or_offset
+    offset = Int((aligned_pointer - allocated_pointer)//sizeof(T))
+    @assert offset == 0 "Arrays with Memoryref offset are, as of yet, unsupported."
+    sizes = size(a)
+    strides = Tuple([1, cumprod(sizes)[1:end-1]...])
+
+    return MemRef{T,N}(
+        allocated_pointer,
+        aligned_pointer,
+        offset,
+        sizes,
+        strides,
+        a,
+    )
+end
+
+
+
 new_intrinsic = ()->Base.compilerbarrier(:const, error("Intrinsics should be compiled to MLIR!"))
 
 @noinline begin_for(start::I, stop::I) where {I <: Integer} =  new_intrinsic()::Int
 @noinline begin_for(result::T, start::I, stop::I) where {I, T} = new_intrinsic()::Tuple{Int, T}
+@noinline mlir_load(A::Brutus.MemRef{T}, I::Union{Integer, CartesianIndex}...) where T = Brutus.new_intrinsic()::T
+@noinline mlir_store!(A::Brutus.MemRef{T}, v, I::Union{Integer, CartesianIndex}...) where {T} = new_intrinsic()::T
+
+@noinline delinearize_index(i1::Integer, basis::NTuple{N, Int}) where {N} = Brutus.new_intrinsic()::NTuple{N, Int}
+delinearize_index(i1::Integer, A::Brutus.MemRef) = delinearize_index(i1, size(A))
 
 @noinline yield_for(val::T=nothing) where T = new_intrinsic()::T
 
@@ -234,18 +272,33 @@ intrinsics_to_mlir = Dict([
         initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
         initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
 
+        start_, stop_ = i64toindex.(Ref(cg), (start_, stop_))
+        stop_ = push!(currentblock(cg), Index.Add(;
+            location = ic.loc,
+            result_=IR.IndexType(),
+            lhs_=stop_,
+            rhs_=IR.get_result(push!(currentblock(cg), arith.constant(1, IR.IndexType(); ic.loc)))
+        )) |> IR.get_result
+
         # affine.for operation can only be created when the region is complete.
         # Delaying the creation is OK since no other operations will be added to the current block after the for loop.
         cur_region = currentregion(cg)
         cur_block = currentblock(cg)
-        for_thunk = ()->push!(cur_block, Affine.For(;
-            location=ic.loc,
-            results_=MLIRType.(initial_values_types),
-            start_,
-            stop_,
-            initial_values_,
-            region_=cur_region
-        ))
+        cur_loc = ic.loc
+        # TODO: here I assume the loop body only contains one block (as it should) this should be asserted.
+        target_block = cg.blocks[cg.currentblockindex + 2]
+        function for_thunk()
+            for_op = push!(cur_block, Affine.For(;
+                location=cur_loc,
+                results_=MLIRType.(initial_values_types),
+                start_,
+                stop_,
+                initial_values_,
+                region_=cur_region
+            ))
+            push!(cur_block, cf.br(target_block, Value[]; loc=cur_loc))
+            return IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
+        end
         push!(cg.loop_thunks, for_thunk)
         cg.currentblockindex += 1 # a hack to make sure that getfields are added inside the loop body
 
@@ -253,11 +306,47 @@ intrinsics_to_mlir = Dict([
     end,
     Brutus.yield_for => function (cg::CodegenContext, ic::InstructionContext)
         @assert length(cg.loop_thunks) > 0 "No loop to yield."
+        push!(currentblock(cg), Affine.Yield(;
+            location=ic.loc,
+            operands_=Value[get_value.(Ref(cg), ic.args)...]
+        ))
         for_thunk = pop!(cg.loop_thunks)
-        for_op = for_thunk()
-        for_result = IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
+        for_result = for_thunk()
         stop_region!(cg)
         return for_result
+    end,
+    Brutus.delinearize_index => function (cg::CodegenContext, ic::InstructionContext)
+        @show last(ic.args)
+        linear_index_, basis_ = get_value.(Ref(cg), ic.args)
+        rank = fieldcount(get_type(cg, last(ic.args)))
+        linear_index_ = i64toindex(cg, linear_index_)
+        return push!(currentblock(cg), Affine.DelinearizeIndex(;
+            location=ic.loc,
+            multi_index_=([IR.IndexType() for _ in 1:rank]),
+            linear_index_,
+            basis_=Value[basis_...]
+        )) |> IR.get_results |> Tuple
+    end,
+    Brutus.mlir_load => function (cg::CodegenContext, ic::InstructionContext)
+        mr, I... = get_value.(Ref(cg), ic.args)
+        indices_ = i64toindex.(Ref(cg), I)
+        return push!(currentblock(cg), Memref.Load(;
+            location=ic.loc,
+            result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
+            memref_=mr.aligned_pointer,
+            indices_
+        )) |> IR.get_result
+    end,
+    Brutus.mlir_store! => function (cg::CodegenContext, ic::InstructionContext)
+        mr, value_, I... = get_value.(Ref(cg), ic.args)
+        indices_ = i64toindex.(Ref(cg), I)
+        push!(currentblock(cg), Memref.Store(;
+            location=ic.loc,
+            value_,
+            memref_=mr.aligned_pointer,
+            indices_
+        ))
+        return value_
     end,
 ])
 
@@ -338,26 +427,39 @@ function code_mlir(f, types)
 
     for (i, argtype) in enumerate(types.parameters)
         arg = IR.push_argument!(cg.entryblock, MLIRType(argtype), Location())
-        if argtype <: Array
+
+        if argtype <: DenseArray
             N = ndims(argtype)
             length = IR.get_result(push!(cg.entryblock, arith.constant(1, IR.IndexType())))
-            size = []
+            sizes = []
             for i in 0:N-1
                 index_ = IR.get_result(push!(cg.entryblock, arith.constant(i, IR.IndexType())))
                 dim = IR.get_result(push!(cg.entryblock, Memref.Dim(; location=IR.Location(), result_=IR.IndexType(), source_=arg, index_)))
-                push!(size, dim)
+                push!(sizes, dim)
                 length = IR.get_result(push!(cg.entryblock, Index.Mul(; location=IR.Location(), result_=IR.IndexType(), lhs_=length, rhs_=dim)))
             end
-            
-            # This NamedTuple mirrors the layout of a Julia Array:
-            arg = (;
-                ref=(;
-                    ptr_or_offset=arg,
-                    mem=(; length=length, ptr=nothing)
-                ),
-                size=Tuple(size)
-            )
+            sizes = Tuple(sizes)
+
+            if argtype <: MemRef
+                arg = (;
+                    # allocated_pointer, # shouldn't occur in ircode so doesn't matter
+                    aligned_pointer=arg,
+                    # offset, # shouldn't occur in ircode so doesn't matter
+                    sizes = sizes,
+                )
+            elseif argtype <: Array
+                # This NamedTuple mirrors the layout of a Julia Array:
+                arg = (;
+                    ref=(;
+                        ptr_or_offset=arg,
+                        mem=(; length=length, ptr=nothing)
+                    ),
+                    size=sizes
+                )
+            end
+            else throw("Array type $argtype not supported.")
         end
+
         println("adding argument $i")
         cg.args[i] = arg # Note that Core.Argument(index) ends up at index-1 in this array. We handle this in get_value.
         println(argtype, MLIRType(argtype))
@@ -435,12 +537,7 @@ function code_mlir(f, types)
                 retop = true ? func.return_ : std.return_
                 loc = Location(string(line.file), line.line, 0)
 
-                # TODO: what should be returned when unreachable? Currently just ignoring it.
-                # if isdefined(inst, :val)
-                #     push!(currentblock(cg), retop([get_value(cg, inst.val)]; loc))
-                # end
                 returnvalue = isdefined(inst, :val) ? indextoi64(cg, get_value(cg, inst.val)) : IR.get_result(push!(currentblock(cg), Llvm.Undef(; location=loc, res_=MLIRType(cg.ret))))
-                # returnvalue = isdefined(inst, :val) ? get_value(cg, inst.val) : IR.get_result(push!(currentblock(cg), arith.constant(0, MLIRType(cg.ret); loc)))
                 push!(currentblock(cg), retop([returnvalue]; loc))
 
             elseif Meta.isexpr(inst, :code_coverage_effect)
@@ -453,14 +550,22 @@ function code_mlir(f, types)
                 # return inst
                 error("unhandled ir $(inst)")
             end
-        end
+        end        
     end
-
-    func_name = nameof(f)
-
     
-    for b in blocks
-        # push!(region, b)
+    func_name = nameof(f)
+    
+    # add fallthrough to next block if necessary
+    for (i, b) in enumerate(cg.blocks)
+        @show IR.mlirIsNull(API.mlirBlockGetTerminator(b))
+        if (i != length(cg.blocks) && IR.mlirIsNull(API.mlirBlockGetTerminator(b)))
+            @warn "Block $i did not have a terminator, adding one."
+            args = []
+            dest = cg.blocks[i+1]
+            loc = IR.Location()
+            brop = true ? cf.br : std.br
+            push!(b, brop(dest, args; loc))
+        end
     end
 
     LLVM15 = true
