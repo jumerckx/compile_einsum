@@ -106,32 +106,32 @@ function i64toindex(cg, x::Value; loc=IR.Location())
         return x
     end
 end
-emit(cg::CodegenContext, ic::InstructionContext{Base.and_int}) = single_op_wrapper(arith.andi)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.add_int}) = single_op_wrapper(arith.addi)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.sub_int}) = single_op_wrapper(arith.subi)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.sle_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.sle))(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.slt_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.ult_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.:(===)}) = single_op_wrapper(cmpi_pred(arith.Predicates.eq))
-emit(cg::CodegenContext, ic::InstructionContext{Base.mul_int}) = single_op_wrapper(arith.muli)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = single_op_wrapper(arith.mulf)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.add_float}) = single_op_wrapper(arith.addf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.and_int}) = cg, single_op_wrapper(arith.andi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.add_int}) = cg, single_op_wrapper(arith.addi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.sub_int}) = cg, single_op_wrapper(arith.subi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.sle_int}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.sle))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.slt_int}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.ult_int}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.:(===)}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.eq))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.mul_int}) = cg, single_op_wrapper(arith.muli)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = cg, single_op_wrapper(arith.mulf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.add_float}) = cg, single_op_wrapper(arith.addf)(cg, ic)
 function emit(cg::CodegenContext, ic::InstructionContext{Base.not_int})
     arg = get_value(cg, only(ic.args))
     ones = push!(currentblock(cg), arith.constant(-1, IR.get_type(arg); ic.loc)) |> IR.get_result
-    IR.get_result(push!(currentblock(cg), arith.xori(Value[arg, ones]; ic.loc)))
+    return cg, IR.get_result(push!(currentblock(cg), arith.xori(Value[arg, ones]; ic.loc)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Base.bitcast})
     @show ic.args
     type, value = get_value.(Ref(cg), ic.args)
     value = indextoi64(cg, value)
-    IR.get_result(push!(currentblock(cg), Arith.Bitcast(; location=ic.loc, out_=type, in_=value)))
+    return cg, IR.get_result(push!(currentblock(cg), Arith.Bitcast(; location=ic.loc, out_=type, in_=value)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Base.getfield})
     object = get_value(cg, first(ic.args))
     field = ic.args[2]
     if field isa QuoteNode; field=field.value; end
-    return getfield(object, field)
+    return cg, getfield(object, field)
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
     inputs_ = get_value.(Ref(cg), ic.args)
@@ -142,16 +142,16 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
         outputs_,
         inputs_
     ))
-    return Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
+    return cg, Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.ifelse})
     @assert arg_types[2] == arg_types[3] "Branches in Core.ifelse should have the same type."
     condition_, true_value_, false_value_ = args
-    IR.get_result(push!(block, Arith.Select(; location=loc, result_=MLIRType(arg_types[2]), condition_, true_value_, false_value_)))
+    return cg, IR.get_result(push!(block, Arith.Select(; location=loc, result_=MLIRType(arg_types[2]), condition_, true_value_, false_value_)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Base.throw_boundserror})
     @warn "Ignoring potential boundserror while generating MLIR."
-    return nothing
+    return cg, nothing
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryref})
     @assert get_type(cg, ic.args[1]) <: MemoryRef "memoryref(::Memory) is not yet supported."
@@ -180,7 +180,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryref})
         static_sizes_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[typemin(Int64)])),
         static_strides_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[1]))
     )) |> IR.get_result
-    return (; ptr_or_offset=flattened, mem=mr.mem)
+    return cg, (; ptr_or_offset=flattened, mem=mr.mem)
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefget})
     @assert ic.args[2] == :not_atomic "Only non-atomic memoryrefget is supported."
@@ -189,7 +189,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefget})
     
     memref_ = get_value(cg, ic.args[1]).ptr_or_offset
     indices_=push!(currentblock(cg), arith.constant(0, IR.IndexType(); ic.loc)) |> IR.get_results
-    push!(currentblock(cg), Memref.Load(;
+    return cg, push!(currentblock(cg), Memref.Load(;
         location=ic.loc,
         result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
         memref_,
@@ -210,7 +210,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefset!})
         memref_=mr.ptr_or_offset,
         indices_
     ))
-    return value_
+    return cg, value_
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
     @assert length(cg.blocks) >= cg.currentblockindex + 1 "Not enough blocks in the CodegenContext."
@@ -259,7 +259,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
     push!(cg.loop_thunks, for_thunk)
     cg.currentblockindex += 1 # a hack to make sure that getfields are added inside the loop body
 
-    return value
+    return cg, value
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.yield_for})
     @assert length(cg.loop_thunks) > 0 "No loop to yield."
@@ -270,14 +270,14 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.yield_for})
     for_thunk = pop!(cg.loop_thunks)
     for_result = for_thunk()
     stop_region!(cg)
-    return for_result
+    return cg, for_result
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.delinearize_index})
     @show last(ic.args)
     linear_index_, basis_ = get_value.(Ref(cg), ic.args)
     rank = fieldcount(get_type(cg, last(ic.args)))
     linear_index_ = i64toindex(cg, linear_index_)
-    return push!(currentblock(cg), Affine.DelinearizeIndex(;
+    return cg, push!(currentblock(cg), Affine.DelinearizeIndex(;
         location=ic.loc,
         multi_index_=([IR.IndexType() for _ in 1:rank]),
         linear_index_,
@@ -287,7 +287,7 @@ end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.mlir_load})
     mr, I... = get_value.(Ref(cg), ic.args)
     indices_ = i64toindex.(Ref(cg), I)
-    return push!(currentblock(cg), Memref.Load(;
+    return cg, push!(currentblock(cg), Memref.Load(;
         location=ic.loc,
         result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
         memref_=mr.aligned_pointer,
@@ -303,7 +303,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.mlir_store!})
         memref_=mr.aligned_pointer,
         indices_
     ))
-    return value_
+    return cg, value_
 end
 
 "Generates a block argument for each phi node present in the block."
@@ -466,7 +466,7 @@ function code_mlir(f, types)
                 ic = InstructionContext{called_func}(args, val_type, loc)
                 # return cg, ic
                 @show typeof(ic)
-                res = emit(cg, ic)
+                cg, res = emit(cg, ic)
 
                 values[sidx] = res
             elseif inst isa PhiNode
@@ -490,6 +490,8 @@ function code_mlir(f, types)
 
                 loc = Location(string(line.file), line.line, 0)
                 cond_brop = true ? cf.cond_br : std.cond_br
+                # @show cond
+                # if inst.cond.id == 54; return 1; end
                 cond_br = cond_brop(cond, other_dest, dest, true_args, false_args; loc)
                 push!(currentblock(cg), cond_br)
             elseif inst isa ReturnNode
