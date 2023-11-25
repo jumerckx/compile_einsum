@@ -106,207 +106,205 @@ function i64toindex(cg, x::Value; loc=IR.Location())
         return x
     end
 end
+emit(cg::CodegenContext, ic::InstructionContext{Base.and_int}) = single_op_wrapper(arith.andi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.add_int}) = single_op_wrapper(arith.addi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.sub_int}) = single_op_wrapper(arith.subi)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.sle_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.sle))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.slt_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.ult_int}) = single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.:(===)}) = single_op_wrapper(cmpi_pred(arith.Predicates.eq))
+emit(cg::CodegenContext, ic::InstructionContext{Base.mul_int}) = single_op_wrapper(arith.muli)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = single_op_wrapper(arith.mulf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.add_float}) = single_op_wrapper(arith.addf)(cg, ic)
+function emit(cg::CodegenContext, ic::InstructionContext{Base.not_int})
+    arg = get_value(cg, only(ic.args))
+    ones = push!(currentblock(cg), arith.constant(-1, IR.get_type(arg); ic.loc)) |> IR.get_result
+    IR.get_result(push!(currentblock(cg), arith.xori(Value[arg, ones]; ic.loc)))
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Base.bitcast})
+    @show ic.args
+    type, value = get_value.(Ref(cg), ic.args)
+    value = indextoi64(cg, value)
+    IR.get_result(push!(currentblock(cg), Arith.Bitcast(; location=ic.loc, out_=type, in_=value)))
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Base.getfield})
+    object = get_value(cg, first(ic.args))
+    field = ic.args[2]
+    if field isa QuoteNode; field=field.value; end
+    return getfield(object, field)
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
+    inputs_ = get_value.(Ref(cg), ic.args)
+    outputs_ = MLIRType.(get_type.(Ref(cg), ic.args))
+    
+    op = push!(currentblock(cg), Builtin.UnrealizedConversionCast(;
+        location=ic.loc,
+        outputs_,
+        inputs_
+    ))
+    return Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Core.ifelse})
+    @assert arg_types[2] == arg_types[3] "Branches in Core.ifelse should have the same type."
+    condition_, true_value_, false_value_ = args
+    IR.get_result(push!(block, Arith.Select(; location=loc, result_=MLIRType(arg_types[2]), condition_, true_value_, false_value_)))
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Base.throw_boundserror})
+    @warn "Ignoring potential boundserror while generating MLIR."
+    return nothing
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryref})
+    @assert get_type(cg, ic.args[1]) <: MemoryRef "memoryref(::Memory) is not yet supported."
+    mr = get_value(cg, ic.args[1])
+    one_off = IR.get_result(push!(currentblock(cg), arith.constant(1, IR.IndexType(); ic.loc)))
+    offsets_ = push!(currentblock(cg), Index.Sub(;
+        location=ic.loc,
+        result_=IR.IndexType(),
+        lhs_=i64toindex(cg, get_value(cg, ic.args[2])),
+        rhs_=one_off
+    )) |> IR.get_results
+    sizes_ = push!(currentblock(cg), Index.Sub(;
+        location=ic.loc,
+        result_=IR.IndexType(),
+        lhs_=mr.mem.length,
+        rhs_=only(offsets_)
+    )) |> IR.get_results
+    flattened = push!(currentblock(cg), Memref.ReinterpretCast(;
+        location=Location(),
+        result_=MLIRType(Vector{eltype(get_type(cg, ic.args[1]))}),
+        source_=mr.ptr_or_offset,
+        offsets_,
+        sizes_,
+        strides_=Value[],
+        static_offsets_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[typemin(Int64)])),
+        static_sizes_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[typemin(Int64)])),
+        static_strides_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[1]))
+    )) |> IR.get_result
+    return (; ptr_or_offset=flattened, mem=mr.mem)
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefget})
+    @assert ic.args[2] == :not_atomic "Only non-atomic memoryrefget is supported."
+    @assert ic.args[2] == :not_atomic "Only non-atomic memoryrefget is supported."
+    # TODO: ic.args[3] signals boundschecking, currently ignored.
+    
+    memref_ = get_value(cg, ic.args[1]).ptr_or_offset
+    indices_=push!(currentblock(cg), arith.constant(0, IR.IndexType(); ic.loc)) |> IR.get_results
+    push!(currentblock(cg), Memref.Load(;
+        location=ic.loc,
+        result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
+        memref_,
+        indices_
+    )) |> IR.get_result
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefset!})
+    @assert ic.args[3] == :not_atomic "Only non-atomic memoryrefset! is supported."
 
-intrinsics_to_mlir = Dict([
-    Base.and_int => single_op_wrapper(arith.andi),
-    Base.add_int => single_op_wrapper(arith.addi),
-    Base.sub_int => single_op_wrapper(arith.subi),
-    Base.sle_int => single_op_wrapper(cmpi_pred(arith.Predicates.sle)),
-    Base.slt_int => single_op_wrapper(cmpi_pred(arith.Predicates.slt)),
-    Base.ult_int => single_op_wrapper(cmpi_pred(arith.Predicates.slt)),
-    Base.:(===) =>  single_op_wrapper(cmpi_pred(arith.Predicates.eq)),
-    Base.mul_int => single_op_wrapper(arith.muli),
-    Base.mul_float => single_op_wrapper(arith.mulf),
-    Base.add_float => single_op_wrapper(arith.addf),
-    Base.not_int => function(cg::CodegenContext, ic::InstructionContext)
-        arg = get_value(cg, only(ic.args))
-        ones = push!(currentblock(cg), arith.constant(-1, IR.get_type(arg); ic.loc)) |> IR.get_result
-        IR.get_result(push!(currentblock(cg), arith.xori(Value[arg, ones]; ic.loc)))
-    end,
-    Base.bitcast => function(cg::CodegenContext, ic::InstructionContext)
-        @show ic.args
-        type, value = get_value.(Ref(cg), ic.args)
-        value = indextoi64(cg, value)
-        IR.get_result(push!(currentblock(cg), Arith.Bitcast(; location=ic.loc, out_=type, in_=value)))
-    end,
-    Base.getfield => function(cg::CodegenContext, ic::InstructionContext)
-        object = get_value(cg, first(ic.args))
-        field = ic.args[2]
-        if field isa QuoteNode; field=field.value; end
-        return getfield(object, field)
-    end,
-    Core.tuple => function(cg::CodegenContext, ic::InstructionContext)
-        inputs_ = get_value.(Ref(cg), ic.args)
-        outputs_ = MLIRType.(get_type.(Ref(cg), ic.args))
-        
-        op = push!(currentblock(cg), Builtin.UnrealizedConversionCast(;
-            location=ic.loc,
-            outputs_,
-            inputs_
+    mr = get_value(cg, ic.args[1])
+
+    value_ = get_value(cg, ic.args[2])
+    memref_ = mr.ptr_or_offset
+    indices_=push!(currentblock(cg), arith.constant(0, IR.IndexType(); ic.loc)) |> IR.get_results
+    push!(currentblock(cg), Memref.Store(;
+        location=ic.loc,
+        value_,
+        memref_=mr.ptr_or_offset,
+        indices_
+    ))
+    return value_
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
+    @assert length(cg.blocks) >= cg.currentblockindex + 1 "Not enough blocks in the CodegenContext."
+    next_block = cg.blocks[cg.currentblockindex + 1]
+                    
+    # the first input is always the loop index
+    value = IR.push_argument!(next_block, IR.IndexType(), ic.loc)
+
+    if (ic.result_type <: Tuple) # this signifies an additional loop variable
+        loopvartype = MLIRType(fieldtypes(ic.result_type)[2]) # for now, only one loop variable possible
+        value = (value, IR.push_argument!(next_block, loopvartype, ic.loc))
+    end
+
+    start_region!(cg)
+
+    initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
+    initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
+
+    start_, stop_ = i64toindex.(Ref(cg), (start_, stop_))
+    stop_ = push!(currentblock(cg), Index.Add(;
+        location = ic.loc,
+        result_=IR.IndexType(),
+        lhs_=stop_,
+        rhs_=IR.get_result(push!(currentblock(cg), arith.constant(1, IR.IndexType(); ic.loc)))
+    )) |> IR.get_result
+
+    # affine.for operation can only be created when the region is complete.
+    # Delaying the creation is OK since no other operations will be added to the current block after the for loop.
+    cur_region = currentregion(cg)
+    cur_block = currentblock(cg)
+    cur_loc = ic.loc
+    # TODO: here I assume the loop body only contains one block (as it should) this should be asserted.
+    target_block = cg.blocks[cg.currentblockindex + 2]
+    function for_thunk()
+        for_op = push!(cur_block, Affine.For(;
+            location=cur_loc,
+            results_=MLIRType.(initial_values_types),
+            start_,
+            stop_,
+            initial_values_,
+            region_=cur_region
         ))
-        return Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
-    end,
-    Core.ifelse => function(block, args, arg_types; loc=Location(), ir)
-        @assert arg_types[2] == arg_types[3] "Branches in Core.ifelse should have the same type."
-        condition_, true_value_, false_value_ = args
-        IR.get_result(push!(block, Arith.Select(; location=loc, result_=MLIRType(arg_types[2]), condition_, true_value_, false_value_)))
-    end,
-    Base.throw_boundserror => function(cg::CodegenContext, ic::InstructionContext)
-        @warn "Ignoring potential boundserror while generating MLIR."
-        return nothing
-    end,
-    Core.memoryref => function(cg::CodegenContext, ic::InstructionContext)
-        @assert get_type(cg, ic.args[1]) <: MemoryRef "memoryref(::Memory) is not yet supported."
-        mr = get_value(cg, ic.args[1])
-        one_off = IR.get_result(push!(currentblock(cg), arith.constant(1, IR.IndexType(); ic.loc)))
-        offsets_ = push!(currentblock(cg), Index.Sub(;
-            location=ic.loc,
-            result_=IR.IndexType(),
-            lhs_=i64toindex(cg, get_value(cg, ic.args[2])),
-            rhs_=one_off
-        )) |> IR.get_results
-        sizes_ = push!(currentblock(cg), Index.Sub(;
-            location=ic.loc,
-            result_=IR.IndexType(),
-            lhs_=mr.mem.length,
-            rhs_=only(offsets_)
-        )) |> IR.get_results
-        flattened = push!(currentblock(cg), Memref.ReinterpretCast(;
-            location=Location(),
-            result_=MLIRType(Vector{eltype(get_type(cg, ic.args[1]))}),
-            source_=mr.ptr_or_offset,
-            offsets_,
-            sizes_,
-            strides_=Value[],
-            static_offsets_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[typemin(Int64)])),
-            static_sizes_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[typemin(Int64)])),
-            static_strides_=IR.Attribute(API.mlirDenseI64ArrayGet(context().context, 1, Int[1]))
-        )) |> IR.get_result
-        return (; ptr_or_offset=flattened, mem=mr.mem)
-    end,
-    Core.memoryrefget => function(cg::CodegenContext, ic::InstructionContext)
-        @assert ic.args[2] == :not_atomic "Only non-atomic memoryrefget is supported."
-        # TODO: ic.args[3] signals boundschecking, currently ignored.
-        
-        memref_ = get_value(cg, ic.args[1]).ptr_or_offset
-        indices_=push!(currentblock(cg), arith.constant(0, IR.IndexType(); ic.loc)) |> IR.get_results
-        push!(currentblock(cg), Memref.Load(;
-            location=ic.loc,
-            result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
-            memref_,
-            indices_
-        )) |> IR.get_result
-    end,
-    Core.memoryrefset! => function(cg::CodegenContext, ic::InstructionContext)
-        @assert ic.args[3] == :not_atomic "Only non-atomic memoryrefset! is supported."
+        push!(cur_block, cf.br(target_block, Value[]; loc=cur_loc))
+        return IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
+    end
+    push!(cg.loop_thunks, for_thunk)
+    cg.currentblockindex += 1 # a hack to make sure that getfields are added inside the loop body
 
-        mr = get_value(cg, ic.args[1])
-
-        value_ = get_value(cg, ic.args[2])
-        memref_ = mr.ptr_or_offset
-        indices_=push!(currentblock(cg), arith.constant(0, IR.IndexType(); ic.loc)) |> IR.get_results
-        push!(currentblock(cg), Memref.Store(;
-            location=ic.loc,
-            value_,
-            memref_,
-            indices_
-        ))
-        return mr
-    end,
-    Brutus.begin_for => function(cg::CodegenContext, ic::InstructionContext)
-        @assert length(cg.blocks) >= cg.currentblockindex + 1 "Not enough blocks in the CodegenContext."
-        next_block = cg.blocks[cg.currentblockindex + 1]
-                        
-        # the first input is always the loop index
-        value = IR.push_argument!(next_block, IR.IndexType(), ic.loc)
-
-        if (ic.result_type <: Tuple) # this signifies an additional loop variable
-            loopvartype = MLIRType(fieldtypes(ic.result_type)[2]) # for now, only one loop variable possible
-            value = (value, IR.push_argument!(next_block, loopvartype, ic.loc))
-        end
-
-        start_region!(cg)
-
-        initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
-        initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
-
-        start_, stop_ = i64toindex.(Ref(cg), (start_, stop_))
-        stop_ = push!(currentblock(cg), Index.Add(;
-            location = ic.loc,
-            result_=IR.IndexType(),
-            lhs_=stop_,
-            rhs_=IR.get_result(push!(currentblock(cg), arith.constant(1, IR.IndexType(); ic.loc)))
-        )) |> IR.get_result
-
-        # affine.for operation can only be created when the region is complete.
-        # Delaying the creation is OK since no other operations will be added to the current block after the for loop.
-        cur_region = currentregion(cg)
-        cur_block = currentblock(cg)
-        cur_loc = ic.loc
-        # TODO: here I assume the loop body only contains one block (as it should) this should be asserted.
-        target_block = cg.blocks[cg.currentblockindex + 2]
-        function for_thunk()
-            for_op = push!(cur_block, Affine.For(;
-                location=cur_loc,
-                results_=MLIRType.(initial_values_types),
-                start_,
-                stop_,
-                initial_values_,
-                region_=cur_region
-            ))
-            push!(cur_block, cf.br(target_block, Value[]; loc=cur_loc))
-            return IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
-        end
-        push!(cg.loop_thunks, for_thunk)
-        cg.currentblockindex += 1 # a hack to make sure that getfields are added inside the loop body
-
-        return value
-    end,
-    Brutus.yield_for => function (cg::CodegenContext, ic::InstructionContext)
-        @assert length(cg.loop_thunks) > 0 "No loop to yield."
-        push!(currentblock(cg), Affine.Yield(;
-            location=ic.loc,
-            operands_=Value[get_value.(Ref(cg), ic.args)...]
-        ))
-        for_thunk = pop!(cg.loop_thunks)
-        for_result = for_thunk()
-        stop_region!(cg)
-        return for_result
-    end,
-    Brutus.delinearize_index => function (cg::CodegenContext, ic::InstructionContext)
-        @show last(ic.args)
-        linear_index_, basis_ = get_value.(Ref(cg), ic.args)
-        rank = fieldcount(get_type(cg, last(ic.args)))
-        linear_index_ = i64toindex(cg, linear_index_)
-        return push!(currentblock(cg), Affine.DelinearizeIndex(;
-            location=ic.loc,
-            multi_index_=([IR.IndexType() for _ in 1:rank]),
-            linear_index_,
-            basis_=Value[basis_...]
-        )) |> IR.get_results |> Tuple
-    end,
-    Brutus.mlir_load => function (cg::CodegenContext, ic::InstructionContext)
-        mr, I... = get_value.(Ref(cg), ic.args)
-        indices_ = i64toindex.(Ref(cg), I)
-        return push!(currentblock(cg), Memref.Load(;
-            location=ic.loc,
-            result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
-            memref_=mr.aligned_pointer,
-            indices_
-        )) |> IR.get_result
-    end,
-    Brutus.mlir_store! => function (cg::CodegenContext, ic::InstructionContext)
-        mr, value_, I... = get_value.(Ref(cg), ic.args)
-        indices_ = i64toindex.(Ref(cg), I)
-        push!(currentblock(cg), Memref.Store(;
-            location=ic.loc,
-            value_,
-            memref_=mr.aligned_pointer,
-            indices_
-        ))
-        return value_
-    end,
-])
+    return value
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Brutus.yield_for})
+    @assert length(cg.loop_thunks) > 0 "No loop to yield."
+    push!(currentblock(cg), Affine.Yield(;
+        location=ic.loc,
+        operands_=Value[get_value.(Ref(cg), ic.args)...]
+    ))
+    for_thunk = pop!(cg.loop_thunks)
+    for_result = for_thunk()
+    stop_region!(cg)
+    return for_result
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Brutus.delinearize_index})
+    @show last(ic.args)
+    linear_index_, basis_ = get_value.(Ref(cg), ic.args)
+    rank = fieldcount(get_type(cg, last(ic.args)))
+    linear_index_ = i64toindex(cg, linear_index_)
+    return push!(currentblock(cg), Affine.DelinearizeIndex(;
+        location=ic.loc,
+        multi_index_=([IR.IndexType() for _ in 1:rank]),
+        linear_index_,
+        basis_=Value[basis_...]
+    )) |> IR.get_results |> Tuple
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Brutus.mlir_load})
+    mr, I... = get_value.(Ref(cg), ic.args)
+    indices_ = i64toindex.(Ref(cg), I)
+    return push!(currentblock(cg), Memref.Load(;
+        location=ic.loc,
+        result_=MLIRType(eltype(get_type(cg, ic.args[1]))),
+        memref_=mr.aligned_pointer,
+        indices_
+    )) |> IR.get_result
+end
+function emit(cg::CodegenContext, ic::InstructionContext{Brutus.mlir_store!})
+    mr, value_, I... = get_value.(Ref(cg), ic.args)
+    indices_ = i64toindex.(Ref(cg), I)
+    push!(currentblock(cg), Memref.Store(;
+        location=ic.loc,
+        value_,
+        memref_=mr.aligned_pointer,
+        indices_
+    ))
+    return value_
+end
 
 "Generates a block argument for each phi node present in the block."
 function prepare_block(ir, bb)
@@ -460,12 +458,15 @@ function code_mlir(f, types)
                     return arg
                 end
 
+                getintrinsic(gr::GlobalRef) = Core.Compiler.abstract_eval_globalref(gr)
+                getintrinsic(inst::Expr) = getintrinsic(first(inst.args))
+                getintrinsic(mod::Module, name::Symbol) = getintrinsic(GlobalRef(mod, name))
+
                 loc = Location(string(line.file), line.line, 0)
                 ic = InstructionContext{called_func}(args, val_type, loc)
-                @info emit(cg, ic)
-
-                fop! = intrinsics_to_mlir[called_func]
-                res = fop!(cg, ic)
+                # return cg, ic
+                @show typeof(ic)
+                res = emit(cg, ic)
 
                 values[sidx] = res
             elseif inst isa PhiNode
