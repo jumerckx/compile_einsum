@@ -5,11 +5,12 @@ module Brutus
 # import LLVM
 using MLIR.IR
 using MLIR: API
-using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm
+using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm, Scf
 using Core: PhiNode, GotoNode, GotoIfNot, SSAValue, Argument, ReturnNode, PiNode
 
 include("memref.jl")
 include("intrinsics.jl")
+include("pass.jl")
 
 IR.MLIRType(::Type{Nothing}) = IR.MLIRType(API.mlirLLVMVoidTypeGet(IR.context()))
 
@@ -28,9 +29,16 @@ mutable struct CodegenContext
     const args::Vector
 end
 currentblock(cg::CodegenContext) = cg.blocks[cg.currentblockindex]
-start_region!(cg::CodegenContext) = push!(cg.regions, Region())
+start_region!(cg::CodegenContext) = push!(cg.regions, Region())[end]
 stop_region!(cg::CodegenContext) = pop!(cg.regions)
 currentregion(cg::CodegenContext) = cg.regions[end]
+
+# mutable struct ForLoopCodegenContext <: CodegenContext
+#     const parent::CodegenContext
+#     const currentblockindex::Int # since a for loop can only have one block, this is const.
+#     const loop_thunk # to be called when the loop is yielded.
+# end
+# currentblock(cg::ForLoopCodegenContext) = cg.parent.blocks[cg.currentblockindex]
 
 function get_value(cg::CodegenContext, x)
     if x isa Core.SSAValue
@@ -41,7 +49,11 @@ function get_value(cg::CodegenContext, x)
         return cg.args[x.n-1]
         # return IR.get_argument(cg.entryblock, x.n - 1)
     elseif x isa BrutusType
-        return IR.get_result(push!(currentblock(cg), arith.constant(x)))
+        if x isa Int
+            return IR.get_result(push!(currentblock(cg), arith.constant(x, IR.IndexType())))
+        else
+            return IR.get_result(push!(currentblock(cg), arith.constant(x)))
+        end            
     elseif (x isa Type) && (x <: BrutusType)
         return IR.MLIRType(x)
     elseif x == GlobalRef(Main, :nothing) # This might be something else than Main sometimes?
@@ -214,17 +226,23 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.memoryrefset!})
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
     @assert length(cg.blocks) >= cg.currentblockindex + 1 "Not enough blocks in the CodegenContext."
-    next_block = cg.blocks[cg.currentblockindex + 1]
+    
+    loop_region = start_region!(cg)
+    loopbody_region = start_region!(cg)
+
+    loop_block = push!(loop_region, Block())
                     
     # the first input is always the loop index
-    value = IR.push_argument!(next_block, IR.IndexType(), ic.loc)
+    value = IR.push_argument!(loop_block, IR.IndexType(), ic.loc)
 
     if (ic.result_type <: Tuple) # this signifies an additional loop variable
         loopvartype = MLIRType(fieldtypes(ic.result_type)[2]) # for now, only one loop variable possible
-        value = (value, IR.push_argument!(next_block, loopvartype, ic.loc))
+        _unnamed0_ = MLIRType[loopvartype]
+        value = (value, IR.push_argument!(loop_block, loopvartype, ic.loc))
+    else
+        _unnamed0_ = MLIRType[]
     end
 
-    start_region!(cg)
 
     initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
     initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
@@ -239,21 +257,46 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
 
     # affine.for operation can only be created when the region is complete.
     # Delaying the creation is OK since no other operations will be added to the current block after the for loop.
-    cur_region = currentregion(cg)
     cur_block = currentblock(cg)
-    cur_loc = ic.loc
-    # TODO: here I assume the loop body only contains one block (as it should) this should be asserted.
-    target_block = cg.blocks[cg.currentblockindex + 2]
-    function for_thunk()
-        for_op = push!(cur_block, Affine.For(;
-            location=cur_loc,
-            results_=MLIRType.(initial_values_types),
-            start_,
-            stop_,
-            initial_values_,
-            region_=cur_region
+    function for_thunk(fallthrough_target::Block)
+        operands_ = push!(loop_block, Scf.ExecuteRegion(;
+            location=ic.loc,
+            _unnamed0_,
+            region_=loopbody_region
+        )) |> IR.get_results
+
+        operands_ = Value[operands_...]
+
+        # push!(loop_block, Affine.Yield(;
+        #     location=ic.loc,
+        #     operands_
+        # ))
+
+        # for_op = push!(cur_block, Affine.For(;
+        #     location=ic.loc,
+        #     results_=MLIRType.(initial_values_types),
+        #     start_,
+        #     stop_,
+        #     initial_values_,
+        #     region_=loop_region
+        # ))
+
+        push!(loop_block, Scf.Yield(;
+            location=ic.loc,
+            results_=operands_
         ))
-        push!(cur_block, cf.br(target_block, Value[]; loc=cur_loc))
+
+        for_op = push!(cur_block, Scf.For(;
+            location=ic.loc,
+            results_=MLIRType.(initial_values_types),
+            lowerBound_=start_,
+            upperBound_=stop_,
+            step_=IR.get_result(push!(cur_block, arith.constant(1, IR.IndexType()))),
+            initArgs_=initial_values_,
+            region_=loop_region
+        ))
+
+        push!(cur_block, cf.br(fallthrough_target, Value[]; loc=ic.loc))
         return IR.num_results(for_op) > 0 ? IR.get_result(for_op) : nothing
     end
     push!(cg.loop_thunks, for_thunk)
@@ -263,12 +306,13 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.yield_for})
     @assert length(cg.loop_thunks) > 0 "No loop to yield."
-    push!(currentblock(cg), Affine.Yield(;
+    push!(currentblock(cg), Scf.Yield(;
         location=ic.loc,
-        operands_=Value[get_value.(Ref(cg), ic.args)...]
+        results_=Value[get_value.(Ref(cg), ic.args)...]
     ))
     for_thunk = pop!(cg.loop_thunks)
-    for_result = for_thunk()
+    for_result = for_thunk(cg.blocks[cg.currentblockindex+1])
+    stop_region!(cg)
     stop_region!(cg)
     return cg, for_result
 end
@@ -353,7 +397,7 @@ This only supports a few Julia Core primitives and scalar types of type $BrutusT
     handful of primitives. A better to perform this conversion would to create a dialect
     representing Julia IR and progressively lower it to base MLIR dialects.
 """
-function code_mlir(f, types)
+function code_mlir(f, types; do_simplify=true)
     ctx = context()
     ir, ret = Core.Compiler.code_ircode(f, types) |> only
     @assert first(ir.argtypes) isa Core.Const
@@ -552,6 +596,10 @@ function code_mlir(f, types)
     )
 
     IR.verifyall(op)
+
+    if IR.verify(op) && do_simplify
+        simplify(op)
+    end
 
     op
 end

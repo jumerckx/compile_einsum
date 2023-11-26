@@ -1,8 +1,11 @@
 using MLIR, MLIR_jll
 includet("utils.jl")
-includet("Brutus.jl")
+# includet("Brutus.jl")
+using Brutus
 
 using Einsum, MLIR, MacroTools
+
+import Brutus: MemRef
 
 using MLIR: IR, API
 ctx = IR.Context()
@@ -10,14 +13,53 @@ registerAllDialects!();
 API.mlirRegisterAllPasses()
 API.mlirRegisterAllLLVMTranslations(ctx.context)
 
-Base.size(A::Brutus.MemRef) = Tuple(A.sizes)
+@inbounds function example1(a::AbstractArray{T}, b::AbstractArray{T}, c::AbstractArray{T}) where {T}
+    i = Brutus.begin_for(1, size(a, 1)+1)
+    @goto body1_begin
+    @label body1_begin
+        j, accum = Brutus.begin_for(T(0), 1, size(b, 2))
+        @goto body2_begin
+            @label body2_begin
+                accum += b[i, j] * c[j]
+            @goto yield_block_1
+            @label yield_block_1
+            accum = Brutus.yield_for(accum)
+            @goto body2_end
+        @label body2_end
+        a[i] = accum
+        @goto yield_block_2
+        @label yield_block_2
+        Brutus.yield_for()
+        @goto body1_end
+    @label body1_end
+    return 1
+end
+ir = Base.code_ircode(example1, Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}})
+op = Brutus.code_mlir(example1, Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}})
 
+IR.verify(op)
 
-Base.getindex(A::Brutus.MemRef{T}, I::Union{Integer, CartesianIndex}...) where {T} = Brutus.mlir_load(A, (I .- 1)...)
-Base.getindex(A::Brutus.MemRef{T}, i1::Integer) where {T} = Brutus.mlir_load(A, Brutus.delinearize_index(i1 - 1, A)...)
+mod = IR.MModule(IR.Location())
+push!(IR.get_body(mod), op)
 
-Base.setindex!(A::Brutus.MemRef{T}, v, I::Union{Integer, CartesianIndex}...) where {T} = Brutus.mlir_store!(A, v, (I .- 1)...)
-Base.setindex!(A::Brutus.MemRef{T}, v, i1::Integer) where {T} = Brutus.mlir_store!(A, v, Brutus.delinearize_index(i1 - 1, A)...)
+b = rand(1000, 2000);
+c = rand(2000);
+a = similar(b, (1000, ));
+
+pm = lowerModuleToLLVM(mod)
+op = IR.get_operation(mod)
+
+addr = jit(mod; opt=3)("_mlir_ciface_example1")
+
+@ccall $addr(MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef}, MemRef(c)::Ref{MemRef})::Int
+
+a ≈ sum(b .* c', dims=2)
+
+# note:
+a ≈ sum(b[:, begin:end-1] .* c[begin:end-1]', dims=2)
+
+a
+sum(b .* c', dims=2)
 
 function example2(c::AbstractVector{T}, a::AbstractVector{T}, b::AbstractVector{T}) where {T}
     i = Brutus.begin_for(1, size(a, 1))
@@ -30,9 +72,11 @@ function example2(c::AbstractVector{T}, a::AbstractVector{T}, b::AbstractVector{
     return 1
 end
 
-ir = Base.code_ircode(example2, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}})
+ir = Base.code_ircode(example2, Tuple{MemRef{Float64, 1}, MemRef{Float64, 1}, MemRef{Float64, 1}})
 
-op = Brutus.code_mlir(example2, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}})
+op = Brutus.code_mlir(example2, Tuple{MemRef{Float64, 1}, MemRef{Float64, 1}, MemRef{Float64, 1}})
+
+op
 
 IR.verify(op)
 
@@ -46,9 +90,9 @@ addr = jit(mod; opt=3)("_mlir_ciface_example2")
 a = rand(10)
 b = rand(10)
 c = similar(a)
-@ccall $addr(Brutus.MemRef(c)::Ref{Brutus.MemRef}, Brutus.MemRef(a)::Ref{Brutus.MemRef}, Brutus.MemRef(b)::Ref{Brutus.MemRef})::Int
+@ccall $addr(MemRef(c)::Ref{MemRef}, MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef})::Int
 
-a - b
+c ≈ a .* b
 
 function matmul(a::A, b::A, c::A) where {A <: AbstractMatrix{T}} where T
     for I in eachindex(IndexCartesian(), c)
@@ -62,8 +106,8 @@ function matmul(a::A, b::A, c::A) where {A <: AbstractMatrix{T}} where T
     return 1
 end
 
-ir = Base.code_ircode(matmul, Tuple{Brutus.MemRef{Float64, 2}, Brutus.MemRef{Float64, 2}, Brutus.MemRef{Float64, 2}}) |> only
-op = Brutus.code_mlir(matmul, Tuple{Brutus.MemRef{Float64, 2}, Brutus.MemRef{Float64, 2}, Brutus.MemRef{Float64, 2}})
+ir = Base.code_ircode(matmul, Tuple{MemRef{Float64, 2}, MemRef{Float64, 2}, MemRef{Float64, 2}}) |> only
+op = Brutus.code_mlir(matmul, Tuple{MemRef{Float64, 2}, MemRef{Float64, 2}, MemRef{Float64, 2}})
 
 mod = IR.MModule(IR.Location())
 push!(IR.get_body(mod), op)
@@ -76,7 +120,9 @@ a = rand(10, 10)
 b = rand(10, 10)
 c = similar(a, (size(a, 1), size(b, 2)))
 
-@ccall $addr(Brutus.MemRef(a)::Ref{Brutus.MemRef}, Brutus.MemRef(b)::Ref{Brutus.MemRef}, Brutus.MemRef(c)::Ref{Brutus.MemRef})::Int
+@ccall $addr(MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef}, MemRef(c)::Ref{MemRef})::Int
+
+c ≈ a*b
 
 function vadd(a, b, c)
     for i in eachindex(c)
@@ -85,8 +131,8 @@ function vadd(a, b, c)
     return 1
 end
 
-ir = Base.code_ircode(vadd, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}}) |> only
-op = Brutus.code_mlir(vadd, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}})
+ir = Base.code_ircode(vadd, Tuple{MemRef{Float64, 1}, MemRef{Float64, 1}, MemRef{Float64, 1}}) |> only
+op = Brutus.code_mlir(vadd, Tuple{MemRef{Float64, 1}, MemRef{Float64, 1}, MemRef{Float64, 1}})
 IR.verify(op)
 
 op = Brutus.code_mlir(vadd, Tuple{Vector{Float64}, Vector{Float64}, Vector{Float64}})
@@ -105,18 +151,4 @@ a = rand(10)
 b = rand(10)
 c = zeros(size(a))
 
-@ccall $addr(Brutus.MemRef(a)::Ref{Brutus.MemRef}, Brutus.MemRef(b)::Ref{Brutus.MemRef}, Brutus.MemRef(c)::Ref{Brutus.MemRef})::Int
-
-
-# ir = Base.code_ircode(matmul, Tuple{Matrix{Float64}, Matrix{Float64}, Matrix{Float64}}) |> only
-# op = Brutus.code_mlir(matmul, Tuple{Matrix{Float64}, Matrix{Float64}, Matrix{Float64}})
-
-# b = IR.Block()
-# v = IR.push_argument!(b, IR.MLIRType(typeof(rand(20, 4))), IR.Location())
-
-# MLIR.Dialects.Brutus.MemRef.ExtractStridedMetadata(; location=IR.Location(),
-#        base_buffer_=IR.MLIRType(typeof(rand(20, 4))),
-#        offset_=IR.IndexType(),
-#        sizes_=IR.MLIRType[IR.IndexType(), IR.IndexType()],
-#        strides_=IR.MLIRType[IR.IndexType(), IR.IndexType()],
-#        source_=v) |> IR.get_results
+@ccall $addr(MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef}, MemRef(c)::Ref{MemRef})::Int
