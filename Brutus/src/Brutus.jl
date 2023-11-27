@@ -33,13 +33,6 @@ start_region!(cg::CodegenContext) = push!(cg.regions, Region())[end]
 stop_region!(cg::CodegenContext) = pop!(cg.regions)
 currentregion(cg::CodegenContext) = cg.regions[end]
 
-# mutable struct ForLoopCodegenContext <: CodegenContext
-#     const parent::CodegenContext
-#     const currentblockindex::Int # since a for loop can only have one block, this is const.
-#     const loop_thunk # to be called when the loop is yielded.
-# end
-# currentblock(cg::ForLoopCodegenContext) = cg.parent.blocks[cg.currentblockindex]
-
 function get_value(cg::CodegenContext, x)
     if x isa Core.SSAValue
         @assert isassigned(cg.values, x.id) "value $x was not assigned"
@@ -97,10 +90,10 @@ indextoi64(cg::CodegenContext, x; loc=IR.Location()) = x
 function indextoi64(cg::CodegenContext, x::Value; loc=IR.Location())
     mlirtype = IR.get_type(x)
     if API.mlirTypeIsAIndex(mlirtype)
-        return push!(currentblock(cg), Index.CastS(;
+        return push!(currentblock(cg), Arith.IndexCast(;
             location=loc,
-            output_=MLIRType(Int),
-            input_=x
+            out_=MLIRType(Int),
+            in_=x
         )) |> IR.get_result
     else
         return x
@@ -109,10 +102,10 @@ end
 function i64toindex(cg, x::Value; loc=IR.Location())
     mlirtype = IR.get_type(x)
     if API.mlirTypeIsAInteger(mlirtype)
-        return push!(currentblock(cg), Index.CastS(;
+        return push!(currentblock(cg), Arith.IndexCast(;
             location=loc,
-            output_=IR.IndexType(),
-            input_=x
+            out_=IR.IndexType(),
+            in_=x
         )) |> IR.get_result
     else
         return x
