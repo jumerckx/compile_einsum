@@ -1,6 +1,5 @@
 using MLIR, MLIR_jll
 includet("utils.jl")
-# includet("Brutus.jl")
 using Brutus
 
 using Einsum, MLIR, MacroTools
@@ -12,6 +11,31 @@ ctx = IR.Context()
 registerAllDialects!();
 API.mlirRegisterAllPasses()
 API.mlirRegisterAllLLVMTranslations(ctx.context)
+
+f(a) = a[5] = 0
+
+begin
+    a = rand(3, 2)
+    f(a)
+    a
+end
+@code_ircode f(MemRef(rand(3)))
+
+op = Brutus.@code_mlir f(MemRef(rand(3, 2)))
+
+mod = IR.MModule(IR.Location())
+push!(IR.get_body(mod), op)
+
+pm = lowerModuleToLLVM(mod)
+
+op = IR.get_operation(mod)
+
+addr = jit(mod; opt=3)("_mlir_ciface_f")
+
+a = rand(3, 2)
+@ccall $addr(MemRef(a)::Ref{MemRef})::Float64
+a
+
 
 @inbounds function example1(a::AbstractArray{T}, b::AbstractArray{T}, c::AbstractArray{T}) where {T}
     i = Brutus.begin_for(1, size(a, 1)+1)
@@ -35,7 +59,16 @@ API.mlirRegisterAllLLVMTranslations(ctx.context)
     return 1
 end
 ir = Base.code_ircode(example1, Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}})
-op = Brutus.code_mlir(example1, Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}})
+
+op = Brutus.code_mlir(
+    example1,
+    Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}},
+    do_simplify=false)
+
+op = Brutus.code_mlir(
+    example1,
+    Tuple{MemRef{Float64, 1}, MemRef{Float64, 2}, MemRef{Float64, 1}},
+    do_simplify=true)
 
 IR.verify(op)
 
@@ -47,19 +80,21 @@ c = rand(2000);
 a = similar(b, (1000, ));
 
 pm = lowerModuleToLLVM(mod)
-op = IR.get_operation(mod)
 
 addr = jit(mod; opt=3)("_mlir_ciface_example1")
 
-@ccall $addr(MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef}, MemRef(c)::Ref{MemRef})::Int
+@ccall $addr(MemRef(a)::Ref{MemRef}, MemRef(b)::Ref{MemRef}, MemRef(c)::Ref{MemRef})::Int;
 
 a ≈ sum(b .* c', dims=2)
 
-# note:
-a ≈ sum(b[:, begin:end-1] .* c[begin:end-1]', dims=2)
+# with regular arrays, MLIR generation fails because unreachable within loop bodies don't work yet.
+# ir = Base.code_ircode(example1, Tuple{Array{Float64, 1}, Array{Float64, 2}, Array{Float64, 1}})
+# op = Brutus.code_mlir(
+#     example1,
+#     Tuple{Array{Float64, 1}, Array{Float64, 2}, Array{Float64, 1}},
+#     do_simplify=true)
+# IR.verify(op)
 
-a
-sum(b .* c', dims=2)
 
 function example2(c::AbstractVector{T}, a::AbstractVector{T}, b::AbstractVector{T}) where {T}
     i = Brutus.begin_for(1, size(a, 1))
@@ -108,6 +143,8 @@ end
 
 ir = Base.code_ircode(matmul, Tuple{MemRef{Float64, 2}, MemRef{Float64, 2}, MemRef{Float64, 2}}) |> only
 op = Brutus.code_mlir(matmul, Tuple{MemRef{Float64, 2}, MemRef{Float64, 2}, MemRef{Float64, 2}})
+
+IR.verify(op)
 
 mod = IR.MModule(IR.Location())
 push!(IR.get_body(mod), op)

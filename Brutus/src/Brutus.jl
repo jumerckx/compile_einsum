@@ -8,7 +8,6 @@ using MLIR: API
 using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm, Scf
 using Core: PhiNode, GotoNode, GotoIfNot, SSAValue, Argument, ReturnNode, PiNode
 
-include("memref.jl")
 include("intrinsics.jl")
 include("pass.jl")
 
@@ -111,6 +110,7 @@ function i64toindex(cg, x::Value; loc=IR.Location())
         return x
     end
 end
+
 emit(cg::CodegenContext, ic::InstructionContext{Base.and_int}) = cg, single_op_wrapper(arith.andi)(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.add_int}) = cg, single_op_wrapper(arith.addi)(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.sub_int}) = cg, single_op_wrapper(arith.subi)(cg, ic)
@@ -121,6 +121,26 @@ emit(cg::CodegenContext, ic::InstructionContext{Base.:(===)}) = cg, single_op_wr
 emit(cg::CodegenContext, ic::InstructionContext{Base.mul_int}) = cg, single_op_wrapper(arith.muli)(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = cg, single_op_wrapper(arith.mulf)(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.add_float}) = cg, single_op_wrapper(arith.addf)(cg, ic)
+
+for (f, index_op) in [
+        (Brutus.mlir_indexadd, Index.Add),
+        (Brutus.mlir_indexsub, Index.Sub),
+        (Brutus.mlir_indexmul, Index.Mul),
+        # (Brutus.mlir_indexdiv, Index.DivS) # TODO: difference between signed and unsigned!
+    ]
+    @eval begin
+        function emit(cg::CodegenContext, ic::InstructionContext{$f})
+            lhs_, rhs_ = get_value.(Ref(cg), ic.args)
+            return cg, push!(currentblock(cg), $index_op(;
+                location=ic.loc,
+                result_=IR.IndexType(),
+                lhs_=i64toindex(cg, lhs_),
+                rhs_=i64toindex(cg, rhs_)
+            )) |> IR.get_result
+        end
+    end
+end
+
 function emit(cg::CodegenContext, ic::InstructionContext{Base.not_int})
     arg = get_value(cg, only(ic.args))
     ones = push!(currentblock(cg), arith.constant(-1, IR.get_type(arg); ic.loc)) |> IR.get_result
