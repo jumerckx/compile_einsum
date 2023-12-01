@@ -23,8 +23,8 @@ for (f, intrinsic) in [
     end
 end
 
-@noinline begin_for(start::Integer, stop::Integer) =  new_intrinsic()::MLIRIndex
-@noinline begin_for(result::T, start::Integer, stop::Integer) where T = new_intrinsic()::Tuple{MLIRIndex, T}
+@noinline begin_for(start::Integer, stop::Integer) =  new_intrinsic()::Int
+@noinline begin_for(result::T, start::Integer, stop::Integer) where T = new_intrinsic()::Tuple{Int, T}
 
 @noinline yield_for(val::T=nothing) where T = new_intrinsic()::T
 
@@ -32,7 +32,7 @@ struct MemRef{T,N} <: DenseArray{T, N}
     allocated_pointer::Ptr{T}
     aligned_pointer::Ptr{T}
     offset::Int
-    sizes::NTuple{N, MLIRIndex}
+    sizes::NTuple{N, Int}
     strides::NTuple{N, Int}
     data::Array{T, N}
 end
@@ -62,10 +62,12 @@ Base.size(A::MemRef) = A.sizes
 @noinline mlir_load(A::Brutus.MemRef{T}, I::Union{Integer, CartesianIndex}...) where T = Brutus.new_intrinsic()::T
 @noinline mlir_store!(A::Brutus.MemRef{T}, v::T, I::Union{Integer, CartesianIndex}...) where {T} = new_intrinsic()::T
 
-Base.getindex(A::MemRef{T}, I::Union{Integer, CartesianIndex}...) where {T} = mlir_load(A, (I .- 1)...)
-Base.getindex(A::MemRef{T}, i1::Integer) where {T} = mlir_load(A, delinearize_index(i1 - 1, A)...)
+Base.getindex(A::MemRef, I::Union{Integer, CartesianIndex}...) = mlir_load(A, (I .- 1)...)
+Base.getindex(A::MemRef{T, 1}, i1::Integer) where {T} = mlir_load(A, i1 - 1)
+Base.getindex(A::MemRef, i1::Integer) = mlir_load(A, delinearize_index(i1 - 1, A)...)
 
 Base.setindex!(A::MemRef{T}, v, I::Union{Integer, CartesianIndex}...) where {T} = mlir_store!(A, T(v), (I .- 1)...)
+Base.setindex!(A::MemRef{T, 1}, v, i1::Integer) where {T} = mlir_store!(A, T(v), i1 - 1)
 Base.setindex!(A::MemRef{T}, v, i1::Integer) where {T} = mlir_store!(A, T(v), delinearize_index(i1 - 1, A)...)
 
 """
@@ -75,5 +77,5 @@ Note that this operation assumes zero-based indexing and row-major layout of the
 By providing a `MemRef` instead, the conversion between column-major and row-major layout
 is handled automatically, the index should still be zero-based.
 """
-@noinline delinearize_index(i1::Integer, basis::NTuple{N, MLIRIndex}) where {N} = Brutus.new_intrinsic()::NTuple{N, MLIRIndex}
+@noinline delinearize_index(i1::Integer, basis::NTuple{N, Integer}) where {N} = Brutus.new_intrinsic()::NTuple{N, Int}
 delinearize_index(i1::Integer, A::Brutus.MemRef) = reverse(delinearize_index(i1, reverse(size(A))))

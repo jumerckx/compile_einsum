@@ -19,9 +19,11 @@ begin
     f(a)
     a
 end
-@code_ircode f(MemRef(rand(3)))
+@code_ircode f(MemRef(rand(3, 2)))
 
 op = Brutus.@code_mlir f(MemRef(rand(3, 2)))
+
+IR.verify(op)
 
 mod = IR.MModule(IR.Location())
 push!(IR.get_body(mod), op)

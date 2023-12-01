@@ -62,18 +62,9 @@ end
 function simplify(op::IR.Operation)
     pm = IR.PassManager()
      
-    # IR.add_pipeline!(IR.OpPassManager(pm), "--canonicalize --mem2reg --canonicalize -scf-for-loop-canonicalization -cse")
     IR.add_pipeline!(IR.OpPassManager(pm), "canonicalize")
     IR.add_pipeline!(IR.OpPassManager(pm), "cse")
     IR.add_pipeline!(IR.OpPassManager(pm), "canonicalize")
-    # IR.add_pipeline!(MLIR.IR.OpPassManager(pm), "affine-expand-index-ops")
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertFuncToLLVMPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionArithToLLVMConversionPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertIndexToLLVMPass())
-    # IR.add_owned_pass!(pm, API.mlirCreateConversionReconcileUnrealizedCasts())
     status = API.mlirPassManagerRunOnOp(pm, op)
 
     if status.value == 0

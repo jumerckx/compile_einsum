@@ -160,7 +160,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Base.getfield})
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
     inputs_ = get_value.(Ref(cg), ic.args)
-    outputs_ = MLIRType.(get_type.(Ref(cg), ic.args))
+    outputs_ = IR.get_type.(inputs_)
     
     op = push!(currentblock(cg), Builtin.UnrealizedConversionCast(;
         location=ic.loc,
@@ -261,7 +261,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
     initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
 
     start_, stop_ = i64toindex.(Ref(cg), (start_, stop_))
-    stop_ = push!(currentblock(cg), Index.Add(;
+    stop_ = push!(currentblock(cg), Arith.AddI(;
         location = ic.loc,
         result_=IR.IndexType(),
         lhs_=stop_,
@@ -334,6 +334,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.delinearize_inde
     linear_index_, basis_ = get_value.(Ref(cg), ic.args)
     rank = fieldcount(get_type(cg, last(ic.args)))
     linear_index_ = i64toindex(cg, linear_index_)
+    basis_ = i64toindex.(Ref(cg), basis_)
     return cg, push!(currentblock(cg), Affine.DelinearizeIndex(;
         location=ic.loc,
         multi_index_=([IR.IndexType() for _ in 1:rank]),
