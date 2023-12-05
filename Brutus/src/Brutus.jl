@@ -170,9 +170,11 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
     return cg, Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.ifelse})
-    @assert arg_types[2] == arg_types[3] "Branches in Core.ifelse should have the same type."
-    condition_, true_value_, false_value_ = args
-    return cg, IR.get_result(push!(block, Arith.Select(; location=loc, result_=MLIRType(arg_types[2]), condition_, true_value_, false_value_)))
+    @warn ic.args
+    T = get_type(cg, ic.args[2])
+    @assert T == get_type(cg, ic.args[3]) "Branches in Core.ifelse should have the same type."
+    condition_, true_value_, false_value_ = get_value.(Ref(cg), ic.args)
+    return cg, IR.get_result(push!(currentblock(cg), Arith.Select(; location=ic.loc, result_=IR.get_type(true_value_), condition_, true_value_, false_value_)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Base.throw_boundserror})
     @warn "Ignoring potential boundserror while generating MLIR."
@@ -577,7 +579,6 @@ function code_mlir(f, types; do_simplify=true)
     
     # add fallthrough to next block if necessary
     for (i, b) in enumerate(cg.blocks)
-        @show IR.mlirIsNull(API.mlirBlockGetTerminator(b))
         if (i != length(cg.blocks) && IR.mlirIsNull(API.mlirBlockGetTerminator(b)))
             @warn "Block $i did not have a terminator, adding one."
             args = []
