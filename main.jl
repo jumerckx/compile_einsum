@@ -2,7 +2,7 @@ using MLIR, MLIR_jll
 includet("utils.jl")
 using Brutus
 import Brutus: MemRef
-using Einsum, BenchmarkTools, MLIR, MacroTools
+using Meinsum, BenchmarkTools, MLIR, MacroTools
 
 using MLIR.Dialects.Affine
 using MLIR.IR
@@ -14,13 +14,13 @@ registerAllDialects!();
 API.mlirRegisterAllPasses()
 API.mlirRegisterAllLLVMTranslations(ctx.context)
 
-prettify(Einsum._einsum(:(A[i] = B[i, j] * C[j])))
+prettify(Meinsum._meinsum(:(A[i] = B[i, j] * C[j])))
 
 prettify(Einsum._einsum(:(A[i] = B[i] * C[i])))
 
 prettify(Einsum._einsum(:(A[i, j] = B[i, k] * C[k, j])))
 
-f(a, b, c) = @einsum a[i] = b[i, j] * c[j];
+f(a, b, c) = @meinsum a[i] = b[i, j] * c[j];
 
 a = zeros(10)
 b = rand(10, 2)
@@ -42,7 +42,7 @@ addr = jit(mod; opt=3)("_mlir_ciface_f")
 
 ##############################################################
 
-f(a, b, c) = @einsum a[i, j] = sin(b[i, k] - c[k, j]);
+f(a, b, c) = @meinsum a[i, j] = sin(b[i, k] - c[k, j]);
 a = zeros(3, 4)
 b = rand(3, 2)
 c = rand(2, 4)
