@@ -16,9 +16,9 @@ API.mlirRegisterAllLLVMTranslations(ctx.context)
 
 prettify(Meinsum._meinsum(:(A[i] = B[i, j] * C[j])))
 
-prettify(Einsum._einsum(:(A[i] = B[i] * C[i])))
+prettify(Meinsum._meinsum(:(A[i] = B[i] * C[i])))
 
-prettify(Einsum._einsum(:(A[i, j] = B[i, k] * C[k, j])))
+prettify(Meinsum._meinsum(:(A[i, j] = B[i, k] * C[k, j])))
 
 f(a, b, c) = @meinsum a[i] = b[i, j] * c[j];
 
