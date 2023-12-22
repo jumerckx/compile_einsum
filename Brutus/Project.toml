@@ -1,0 +1,7 @@
+name = "Brutus"
+uuid = "10db2648-50ef-49bd-9477-c1b55d74eda0"
+authors = ["jumerckx "]
+version = "0.1.0"
+
+[deps]
+MLIR = "bfde9dd4-8f40-4a1e-be09-1475335e1c92"

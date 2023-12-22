@@ -22,15 +22,33 @@ function registerAllDialects!()
     return registry
 end
 
+function mlir_opt(mod::IR.MModule, pipeline::String)
+    pm = IR.PassManager()
+    IR.add_pipeline!(MLIR.IR.OpPassManager(pm), pipeline)
+    status = API.mlirPassManagerRunOnOp(pm, IR.get_operation(mod).operation)
+    if status.value == 0
+        error("Unexpected failure running pass failure")
+    end
+    return mod
+end
+
 function lowerModuleToLLVM(mod::IR.MModule)
     pm = IR.PassManager()
 
-    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
-    IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
-    IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
-    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertFuncToLLVMPass())
-    IR.add_owned_pass!(pm, API.mlirCreateConversionArithToLLVMConversionPass())
-    IR.add_owned_pass!(pm, API.mlirCreateConversionConvertIndexToLLVMPass())
+    IR.add_pipeline!(
+        MLIR.IR.OpPassManager(pm), 
+        "func.func(convert-vector-to-scf{full-unroll=false lower-tensors=false target-rank=1}),func.func(convert-linalg-to-loops),lower-affine,convert-scf-to-cf,canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=true test-convergence=false top-down=true},cse,convert-vector-to-llvm{enable-amx=false enable-arm-neon=false enable-arm-sve=false enable-x86vector=false force-32bit-vector-indices=true reassociate-fp-reductions=false},func.func(convert-math-to-llvm{approximate-log1p=true}),expand-strided-metadata,lower-affine,finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},convert-index-to-llvm{index-bitwidth=0},reconcile-unrealized-casts"
+    )
+
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertVectorToLLVMPass())
+    # IR.add_pipeline!(MLIR.IR.OpPassManager(pm), "normalize-memrefs")
+    # IR.add_pipeline!(MLIR.IR.OpPassManager(pm), "affine-expand-index-ops")
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionSCFToControlFlow())
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionFinalizeMemRefToLLVMConversionPass())
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertFuncToLLVMPass())
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionArithToLLVMConversionPass())
+    # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertIndexToLLVMPass())
     IR.add_owned_pass!(pm, API.mlirCreateConversionReconcileUnrealizedCasts())
     status = API.mlirPassManagerRunOnOp(pm, IR.get_operation(mod).operation)
 
@@ -84,7 +102,7 @@ end
   
 
 function jit(mod::IR.MModule; opt=0)
-    paths = Base.unsafe_convert.(Ref(API.MlirStringRef), ["/storage/jumerckx/llvm_install_debug/lib/libmlir_cuda_runtime.so", "/storage/jumerckx/llvm_install_debug/lib/libmlir_runner_utils.so"])
+    paths = Base.unsafe_convert.(Ref(API.MlirStringRef), [MLIR.API.mlir_c_runner_utils, MLIR.API.mlir_runner_utils])
     jit = API.mlirExecutionEngineCreate(
         mod,
         opt,
@@ -98,32 +116,4 @@ function jit(mod::IR.MModule; opt=0)
         return addr
     end
     return lookup
-end
-
-using StaticArrays
-
-struct MemRef{T,N}
-    allocated_pointer::Ptr{T}
-    aligned_pointer::Ptr{T}
-    offset::Int
-    sizes::SVector{N, Int}
-    strides::SVector{N, Int}
-    data::Array{T, N}
-end
-
-function MemRef(a::Array{T,N}) where {T,N}
-    @assert isbitstype(T) "non-isbitstype might not work"
-    allocated_pointer = aligned_pointer = Base.unsafe_convert(Ptr{T}, a)
-    offset = 0
-    sizes = SVector{N}(collect(size(a)))
-    strides = SVector{N}([1, cumprod(sizes)[1:end-1]...])
-
-    return MemRef{T,N}(
-        allocated_pointer,
-        aligned_pointer,
-        offset,
-        sizes,
-        strides,
-        a,
-    )
 end

@@ -1,0 +1,13 @@
+name = "Meinsum"
+uuid = "5f2b55c0-dd4f-4f99-8055-6f1fcf91333f"
+license = "MIT"
+authors = ["Alex Williams <alex.h.willia@gmail.com>", 
+           "Michael Abbott <mcabbott@users.noreply.github.com>",
+           "Philipp Gabler <phipsgabler@users.noreply.github.com>"]
+version = "0.4.1"
+
+[deps]
+Compat = "34da2185-b29b-5c13-b0c7-acf172513d20"
+
+[compat]
+julia = "0.6, 0.7, 1.0, 1.1"
