@@ -1,8 +1,5 @@
 module Brutus
 
-# __revise_mode__ = :eval
-
-# import LLVM
 using MLIR.IR
 using MLIR: API
 using MLIR.Dialects: arith, func, cf, std, Arith, Memref, Index, Builtin, Ub, Affine, Llvm, Scf
