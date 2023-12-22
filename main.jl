@@ -1,4 +1,4 @@
-using MLIR, MLIR_jll
+using MLIR
 includet("utils.jl")
 using Brutus
 import Brutus: MemRef
@@ -6,7 +6,6 @@ using Meinsum, BenchmarkTools, MLIR, MacroTools
 
 using MLIR.Dialects.Affine
 using MLIR.IR
-
 
 using MLIR: IR, API
 ctx = IR.Context()

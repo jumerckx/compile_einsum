@@ -13,7 +13,7 @@ include("pass.jl")
 
 IR.MLIRType(::Type{Nothing}) = IR.MLIRType(API.mlirLLVMVoidTypeGet(IR.context()))
 
-const BrutusScalarType = Union{Bool, Int64, UInt64, Int32, UInt32, Float32, Float64, UInt64, Array{Float64}, Array{Int64}}
+const BrutusScalarType = Union{Bool, Int64, UInt64, Int32, UInt32, Float16, Float32, Float64, UInt64}
 const BrutusType = Union{BrutusScalarType, Array{BrutusScalarType}}
 
 mutable struct CodegenContext

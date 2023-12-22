@@ -37,7 +37,7 @@ function lowerModuleToLLVM(mod::IR.MModule)
 
     IR.add_pipeline!(
         MLIR.IR.OpPassManager(pm), 
-        "func.func(convert-vector-to-scf{full-unroll=false lower-tensors=false target-rank=1}),func.func(convert-linalg-to-loops),lower-affine,convert-scf-to-cf,canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=true test-convergence=false top-down=true},cse,convert-vector-to-llvm{enable-amx=false enable-arm-neon=false enable-arm-sme=false enable-arm-sve=false enable-x86vector=false force-32bit-vector-indices=true reassociate-fp-reductions=false use-opaque-pointers=true},func.func(convert-math-to-llvm{approximate-log1p=true}),expand-strided-metadata,lower-affine,finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false use-opaque-pointers=true},convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false use-opaque-pointers=true},convert-index-to-llvm{index-bitwidth=0},reconcile-unrealized-casts"
+        "func.func(convert-vector-to-scf{full-unroll=false lower-tensors=false target-rank=1}),func.func(convert-linalg-to-loops),lower-affine,convert-scf-to-cf,canonicalize{  max-iterations=10 max-num-rewrites=-1 region-simplify=true test-convergence=false top-down=true},cse,convert-vector-to-llvm{enable-amx=false enable-arm-neon=false enable-arm-sve=false enable-x86vector=false force-32bit-vector-indices=true reassociate-fp-reductions=false},func.func(convert-math-to-llvm{approximate-log1p=true}),expand-strided-metadata,lower-affine,finalize-memref-to-llvm{index-bitwidth=0 use-aligned-alloc=false use-generic-functions=false},convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},convert-index-to-llvm{index-bitwidth=0},reconcile-unrealized-casts"
     )
 
     # IR.add_owned_pass!(pm, API.mlirCreateConversionConvertAffineToStandard())
@@ -102,7 +102,7 @@ end
   
 
 function jit(mod::IR.MModule; opt=0)
-    paths = Base.unsafe_convert.(Ref(API.MlirStringRef), ["/storage/jumerckx/llvm_install_debug/lib/libmlir_cuda_runtime.so", "/storage/jumerckx/llvm_install_debug/lib/libmlir_runner_utils.so", "/storage/jumerckx/llvm_install_debug/lib/libmlir_c_runner_utils.so"])
+    paths = Base.unsafe_convert.(Ref(API.MlirStringRef), [MLIR.API.mlir_c_runner_utils, MLIR.API.mlir_runner_utils])
     jit = API.mlirExecutionEngineCreate(
         mod,
         opt,
