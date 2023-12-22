@@ -30,6 +30,13 @@ c = rand(2)
 
 op = Brutus.@code_mlir f(Brutus.MemRef(a), Brutus.MemRef(b), Brutus.MemRef(c))
 
+f(y, x) = @meinsum y[i] = x[i]
+@code_ircode f(Brutus.MemRef(a), Brutus.MemRef(a))
+Base.code_ircode(f, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}})
+Brutus.@code_mlir f(Brutus.MemRef(a), Brutus.MemRef(a))
+Brutus.code_mlir(f, Tuple{Brutus.MemRef{Float64, 1}, Brutus.MemRef{Float64, 1}}, do_simplify=false)
+
+
 mod = IR.MModule(IR.Location())
 push!(IR.get_body(mod), op)
 pm = lowerModuleToLLVM(mod)
@@ -42,14 +49,18 @@ addr = jit(mod; opt=3)("_mlir_ciface_f")
 
 ##############################################################
 
-f(a, b, c) = @meinsum a[i, j] = sin(b[i, k] - c[k, j]);
-a = zeros(3, 4)
-b = rand(3, 2)
-c = rand(2, 4)
+f(a, b, c) = @meinsum a[i, j] = b[i, k] * c[k, j];
+a = zeros(Float16, 3, 4)
+b = rand(Float16, 3, 2)
+c = rand(Float16, 2, 4)
+
+prettify(@macroexpand @meinsum a[i, j] = b[i, k] * c[k, j])
 
 @code_ircode f(Brutus.MemRef(a), Brutus.MemRef(b), Brutus.MemRef(c))
 
 op = Brutus.@code_mlir f(Brutus.MemRef(a), Brutus.MemRef(b), Brutus.MemRef(c))
+
+IR.verify(op)
 
 mod = IR.MModule(IR.Location())
 push!(IR.get_body(mod), op)

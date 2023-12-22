@@ -2,78 +2,84 @@ using MLIR, MLIR_jll
 includet("utils.jl")
 using Brutus
 import Brutus: MemRef
-using Einsum, Meinsum, BenchmarkTools, MLIR, MacroTools, LinearAlgebra
+using Einsum, Meinsum, BenchmarkTools, MLIR, MacroTools, LinearAlgebra, Tullio, LoopVectorization
 using MLIR: IR, API
 ctx = IR.Context()
 registerAllDialects!();
 API.mlirRegisterAllPasses()
 API.mlirRegisterAllLLVMTranslations(ctx.context)
 
-a = rand(100, 100)
-b = rand(100, 70)
-c = rand(70, 100)
+# a = rand(100, 100)
+# b = rand(100, 70)
+# c = rand(70, 100)
 
-function f(a, b, c)
-    @einsum a[i, j] = b[i, k] * c[k, j];
-    nothing
-end
-f(a, b, c)
+a = rand(1024, 1024)
+b = rand(1024, 1024)
+c = rand(1024, 1024)
 
-function _einsum_function(expr, names)
+function get_functions(expr, names)
     quote
-        ($(names...),) -> @einsum $expr
+        f_einsum($(names...),) = @einsum $expr
+        f_mlir($(names...),) = @meinsum $expr
+
+        (f_einsum, f_mlir)
     end
 end
-macro einsum_function(expr, names)
-    @show names
-    _einsum_function(expr, names.args)
+macro get_functions(expr, names)
+    get_functions(expr, names.args)
 end
 
-_einsum_function(:(y[i, j] = x[i, k] * z[k, j]), (:y, :x, :z))
+first(@get_functions(y[i, j] = x[i, k] * z[k, j], (y, x, z)))(a, b, c)
 
-test = @einsum_function(y[i, j] = x[i, k] * z[k, j], (y, x, z))(a, b, c)
-
-function _mlir_function(expr, names, sizes)
-    :(Brutus.MemRef())
-    quote
-        _f = ($(names...)) -> @meinsum $expr
-        Brutus.@code_mlir _f(Brutus.MemRef($sizes[1]), Brutus.MemRef($sizes[2]), Brutus.MemRef($sizes[3]))
-        ($(names...),) -> @meinsum $expr
+function benchmark((f_einsum, f_mlir), sizes)
+    args = []
+    for s in sizes
+        push!(args, rand(s...))
     end
-    end
-end
+    args_mlir = MemRef.(args)
 
-f_mlir(a, b, c) = @meinsum a[i, j] = b[i, k] * c[k, j]
-function get_mlir_function(f, a, b, c)
-    op = Brutus.@code_mlir f(Brutus.MemRef(a), Brutus.MemRef(b), Brutus.MemRef(c))
+    f_einsum(args...)
+    @time f_einsum(args...)
 
+    op = Brutus.@code_mlir f_mlir(args_mlir...)
     mod = IR.MModule(IR.Location())
     push!(IR.get_body(mod), op)
     pm = lowerModuleToLLVM(mod)
     op = IR.get_operation(mod)
-    addr = jit(mod; opt=3)("_mlir_ciface_$(Symbol(f))")
-
-    return (a, b, c)->ccall(addr, Int, (Ref{MemRef}, Ref{MemRef}, Ref{MemRef}), MemRef(a), MemRef(b), MemRef(c))
-
+    addr = jit(mod; opt=3)("_mlir_ciface_$(String(Symbol(f)))")
+    f_mlir(args_mlir) = ccall(addr, Int, (Ref{MemRef}, Ref{MemRef}, Ref{MemRef}), args_mlir...)
+    f_mlir(args_mlir)
+    @time f_mlir(args_mlir)
+    # @btime $f($x, $y, $z)
 end
 
-@benchmark $(get_mlir_function(f_mlir, a, b, c))(a, b, c)
+benchmark(@get_functions(y[i, j] = x[i, k] * z[k, j], (y, x, z)), ((100, 100), (100, 100), (100, 100)))
 
-function _time_einsum(expr, sizes::Dict{Symbol, NTuple{N, Int}}) where N
-    exprs = []
-    for (varname, size) in sizes
-        push!(exprs, :($varname = rand($size)))
-    end
-    @warn Expr(:block, exprs...)
+f_einsum(a, b, c) = @einsum a[i, j] += b[i, k] * c[k, j]
 
-    quote
-        $(Expr(:block, exprs...))
-        @time @einsum $expr
-    end
+f_tullio(a, b, c) = @tullio a[i, j] = b[i, k] * c[k, j]
+
+@benchmark f_einsum(a, b, c)
+
+@code_llvm f_tullio(a, b, c)
+
+
+function g(a, b, c)
+    @meinsum a[i, j] = b[i, k] * c[k, j]
+    @meinsum a[i, j] += b[i, j]
+    return 1
 end
 
-macro time_einsum(ex)
-     _time_einsum(ex.args...)
-end
+@code_ircode g(MemRef(a), MemRef(b), MemRef(c))
 
-@time_einsum (:(A[i, j] = B[i, k] * C[k, j]), Dict([:A=>(100, 100), :B=>(100, 70), :C=>(70, 100)]))
+Brutus.@code_mlir g(MemRef(a), MemRef(b), MemRef(c))
+
+prettify(@macroexpand @meinsum a[i, j] = c[i, j] + b[i, k])
+
+prettify(@macroexpand @meinsum a[i, j] = b[i, k] * c[k, j])
+
+a = rand(3, 3)
+b = rand(3, 10000)
+c = rand(10000, 3)
+
+@tullio a[i, j] = b[i, k] * c[k, j]

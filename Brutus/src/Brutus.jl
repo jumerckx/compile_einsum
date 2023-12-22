@@ -119,8 +119,10 @@ emit(cg::CodegenContext, ic::InstructionContext{Base.slt_int}) = cg, single_op_w
 emit(cg::CodegenContext, ic::InstructionContext{Base.ult_int}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.slt))(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.:(===)}) = cg, single_op_wrapper(cmpi_pred(arith.Predicates.eq))(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.mul_int}) = cg, single_op_wrapper(arith.muli)(cg, ic)
-emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = cg, single_op_wrapper(arith.mulf)(cg, ic)
 emit(cg::CodegenContext, ic::InstructionContext{Base.add_float}) = cg, single_op_wrapper(arith.addf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.sub_float}) = cg, single_op_wrapper(arith.subf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.mul_float}) = cg, single_op_wrapper(arith.mulf)(cg, ic)
+emit(cg::CodegenContext, ic::InstructionContext{Base.div_float}) = cg, single_op_wrapper(arith.divf)(cg, ic)
 
 for (f, index_op) in [
         (Brutus.mlir_indexadd, Index.Add),
@@ -262,6 +264,7 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
     initial_values_..., start_, stop_ = get_value.(Ref(cg), ic.args)
     initial_values_types..., _, _ = get_type.(Ref(cg), ic.args)
 
+    initial_values_ = indextoi64.(Ref(cg), initial_values_) # in the case of an integer initial value, this is necessary
     start_, stop_ = i64toindex.(Ref(cg), (start_, stop_))
     stop_ = push!(currentblock(cg), Arith.AddI(;
         location = ic.loc,
@@ -281,20 +284,6 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.begin_for})
         )) |> IR.get_results
 
         operands_ = Value[operands_...]
-
-        # push!(loop_block, Affine.Yield(;
-        #     location=ic.loc,
-        #     operands_
-        # ))
-
-        # for_op = push!(cur_block, Affine.For(;
-        #     location=ic.loc,
-        #     results_=MLIRType.(initial_values_types),
-        #     start_,
-        #     stop_,
-        #     initial_values_,
-        #     region_=loop_region
-        # ))
 
         push!(loop_block, Scf.Yield(;
             location=ic.loc,

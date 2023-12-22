@@ -34,9 +34,7 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
     dimension_checks = Expr[]
 
     # remove duplicate indices on the right hand side
-    @info "Removing rhs duplicate indices ($rhs_indices)"
     for i in reverse(eachindex(rhs_indices))
-        @info "Looking at $(rhs_indices[i]), $(rhs_axis_exprs[i])"
         duplicated = false
         di = rhs_axis_exprs[i]
         
@@ -63,20 +61,13 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
                     lhs_axis_exprs[j] = :(min($dj, $di))
                 end
                 duplicated = true
-                @info "Found duplicated: $(lhs_axis_exprs[j])"
             end
         end
         
         if duplicated
-            @info "$i duplicated. di: $di"
             deleteat!(rhs_indices, i)
             deleteat!(rhs_axis_exprs, i)
         end
-        @info """
-        Finally:
-            rhs_indices: $(rhs_indices), $(rhs_axis_exprs)
-            lhs_indices: $(lhs_indices), $(lhs_axis_exprs)
-        """
     end
 
     # remove duplicate indices on the left hand side
@@ -129,8 +120,6 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
     
     # copy the index expression to modify it; loop_expr is the Expr we'll build loops around
     loop_expr = unquote_offsets!(copy(expr))
-    @warn loop_expr
-    # return loop_expr
 
     # Nest loops to iterate over the destination variables
     if length(rhs_indices) > 0
@@ -141,11 +130,9 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
         @gensym s
         loop_expr.args[1] = s
         loop_expr.head = :(+=)
-        @warn loop_expr
 
         # Nest loops to iterate over the summed out variables
         loop_expr = nest_loops(loop_expr, rhs_indices, rhs_axis_exprs, (s, T))
-        @warn loop_expr
 
         # Prepend with s = 0, and append with assignment
         # to the left hand side of the equation.
@@ -156,11 +143,9 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
             $loop_expr
             $lhs_assignment
         end
-        @info loop_expr
 
         # Now loop over indices appearing on lhs, if any
         loop_expr = nest_loops(loop_expr, lhs_indices, lhs_axis_exprs)
-        @info loop_expr
     else
         # We do not sum over any indices, only loop over lhs
         loop_expr.head = assignment_op
@@ -179,7 +164,7 @@ function _meinsum(expr::Expr, inbounds = true, simd = false, threads = false)
         $loop_expr
 
         # $(lhs_arrays[1])
-        return 1
+        1
     end
 
     return esc(full_expression)
@@ -224,7 +209,6 @@ function nest_loops(expr::Expr,
                     accumulator=nothing::Union{Nothing, Tuple{Symbol, Symbol}})
     isempty(index_names) && return expr
 
-    @warn index_names
 
     for j = 1:length(index_names)
         if j == length(index_names) && accumulator !== nothing
