@@ -146,7 +146,6 @@ function emit(cg::CodegenContext, ic::InstructionContext{Base.not_int})
     return cg, IR.get_result(push!(currentblock(cg), arith.xori(Value[arg, ones]; ic.loc)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Base.bitcast})
-    @show ic.args
     type, value = get_value.(Ref(cg), ic.args)
     value = indextoi64(cg, value)
     return cg, IR.get_result(push!(currentblock(cg), Arith.Bitcast(; location=ic.loc, out_=type, in_=value)))
@@ -169,7 +168,6 @@ function emit(cg::CodegenContext, ic::InstructionContext{Core.tuple})
     return cg, Tuple(IR.get_result.(Ref(op), 1:fieldcount(ic.result_type)))
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Core.ifelse})
-    @warn ic.args
     T = get_type(cg, ic.args[2])
     @assert T == get_type(cg, ic.args[3]) "Branches in Core.ifelse should have the same type."
     condition_, true_value_, false_value_ = get_value.(Ref(cg), ic.args)
@@ -318,7 +316,6 @@ function emit(cg::CodegenContext, ic::InstructionContext{Brutus.yield_for})
     return cg, for_result
 end
 function emit(cg::CodegenContext, ic::InstructionContext{Brutus.delinearize_index})
-    @show last(ic.args)
     linear_index_, basis_ = get_value.(Ref(cg), ic.args)
     rank = fieldcount(get_type(cg, last(ic.args)))
     linear_index_ = i64toindex(cg, linear_index_)
@@ -462,21 +459,17 @@ function code_mlir(f, types; do_simplify=true)
             else throw("Array type $argtype not supported.")
         end
 
-        println("adding argument $i")
         cg.args[i] = arg # Note that Core.Argument(index) ends up at index-1 in this array. We handle this in get_value.
-        println(argtype, MLIRType(argtype))
     end
 
     for (block_id, bb) in enumerate(cg.ir.cfg.blocks)
         cg.currentblockindex = block_id
-        @info "number of regions: $(length(cg.regions))"
         push!(currentregion(cg), currentblock(cg))
         n_phi_nodes = 0
 
         for sidx in bb.stmts
             stmt = cg.ir.stmts[sidx]
             inst = stmt[:inst]
-            @info "Working on: $(inst)"
             if inst == nothing
                 inst = Core.GotoNode(block_id+1)
                 line = Core.LineInfoNode(Brutus, :code_mlir, Symbol(@__FILE__), Int32(@__LINE__), Int32(@__LINE__))
@@ -510,8 +503,6 @@ function code_mlir(f, types; do_simplify=true)
 
                 loc = Location(string(line.file), line.line, 0)
                 ic = InstructionContext{called_func}(args, val_type, loc)
-                # return cg, ic
-                @show typeof(ic)
                 cg, res = emit(cg, ic)
 
                 values[sidx] = res
@@ -536,8 +527,6 @@ function code_mlir(f, types; do_simplify=true)
 
                 loc = Location(string(line.file), line.line, 0)
                 cond_brop = true ? cf.cond_br : std.cond_br
-                # @show cond
-                # if inst.cond.id == 54; return 1; end
                 cond_br = cond_brop(cond, other_dest, dest, true_args, false_args; loc)
                 push!(currentblock(cg), cond_br)
             elseif inst isa ReturnNode
@@ -551,7 +540,6 @@ function code_mlir(f, types; do_simplify=true)
             elseif Meta.isexpr(inst, :code_coverage_effect)
                 # Skip
             elseif Meta.isexpr(inst, :boundscheck)
-                @warn "discarding boundscheck"
                 cg.values[sidx] = IR.get_result(push!(currentblock(cg), arith.constant(true)))
             else
                 # @warn "unhandled ir $(inst)"
@@ -566,7 +554,6 @@ function code_mlir(f, types; do_simplify=true)
     # add fallthrough to next block if necessary
     for (i, b) in enumerate(cg.blocks)
         if (i != length(cg.blocks) && IR.mlirIsNull(API.mlirBlockGetTerminator(b)))
-            @warn "Block $i did not have a terminator, adding one."
             args = []
             dest = cg.blocks[i+1]
             loc = IR.Location()
