@@ -265,8 +265,8 @@ version = "0.12.166"
 
 [[deps.MLIR]]
 deps = ["CEnum", "LLVM", "Libdl", "Pkg"]
-git-tree-sha1 = "c4f0016d965daaf41371526532031c71d2d44b7c"
-repo-rev = "main"
+git-tree-sha1 = "0d7619607035f213cf4878caddecae6d695fa241"
+repo-rev = "05a7c65bd2b381022e54097ba958ad6c10bc5e81"
 repo-url = "https://github.com/jumerckx/MLIR.jl"
 uuid = "bfde9dd4-8f40-4a1e-be09-1475335e1c92"
 version = "0.1.0"
