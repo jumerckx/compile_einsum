@@ -8,6 +8,7 @@
   > ] # to enter package mode
   > activate .
   > instantiate
+  > build # will download an MLIR release from [Makslevental's Wheels](https://github.com/makslevental/wheels), roughly 700MB.
   ```
 4. run `main.jl`
   ```
